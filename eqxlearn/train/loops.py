@@ -12,7 +12,7 @@ from eqxlearn.train.losses import MeanSquaredError
 
 def fit(
     model: eqx.Module,
-    optimizer: optax.GradientTransformation,
+    optimizer: Optional[optax.GradientTransformation] = None,
     X: Optional[jnp.ndarray] = None,
     y: Optional[jnp.ndarray] = None,
     loss_fn: Optional[Union[Callable, eqx.Module]] = None,
@@ -21,6 +21,8 @@ def fit(
     patience: int = 10,
     show_progress: bool = True,
 ) -> Tuple[eqx.Module, List[float]]:
+    if optimizer is None:
+        optimizer = optax.adam(learning_rate=0.1)
     
     # 1. Partition the model
     # We filter out non-trainable leaves using Paramax
