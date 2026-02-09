@@ -1,20 +1,16 @@
 import jax
 import jax.numpy as jnp
 import equinox as eqx
-from typing import Callable, Any
+from typing import Callable, Union, Tuple
 
-class MultiOutputRegressor(eqx.Module):
+from eqxlearn.base import Regressor
+
+class _MultiOutputBase(Regressor):
     """
-    A Meta-Estimator that wraps an arbitrary regressor to handle multi-output targets.
-    
-    It works by:
-    1. Creating M independent instances of the base regressor.
-    2. Stacking them into a single "Batched" PyTree.
-    3. Using vmap to train/predict all M outputs in parallel.
+    Base class for Multi-Output regression. 
+    Handles prediction and forward pass, but NOT loss.
     """
-    # This holds the stack of M models. 
-    # Internally, it looks like a single model where every parameter has an extra dim (M, ...)
-    batched_model: eqx.Module 
+    batched_model: eqx.Module
 
     def __init__(
         self, 
@@ -22,45 +18,79 @@ class MultiOutputRegressor(eqx.Module):
         Y: jnp.ndarray, 
         make_regressor_fn: Callable[[jnp.ndarray, jnp.ndarray], eqx.Module]
     ):
-        """
-        Args:
-            X: (N, D) Input data (shared across all outputs).
-            Y: (N, M) Target data (one column per output task).
-            make_regressor_fn: A function that accepts (x, y) 1D slices 
-                               and returns an initialized regressor instance.
-        """
         N, M = Y.shape
-        
-        # 1. Instantiate M independent models using Python loop (only runs once at init)
-        #    We pass the shared X and the specific column Y[:, i] to each.
+        # Instantiate M independent models
         list_of_models = [make_regressor_fn(X, Y[:, i]) for i in range(M)]
         
-        # 2. Stack them into a single Batched PyTree
-        #    Example: If model has param 'variance', new shape is (M, 1)
+        # Stack them into a single Batched PyTree
+        # The resulting object looks like the original model, 
+        # but every array leaf has an extra leading dimension (M).
         self.batched_model = jax.tree.map(lambda *args: jnp.stack(args), *list_of_models)
 
-    def loss(self):
+    def __call__(self, x: jnp.ndarray, **kwargs):
         """
-        Computes the sum of losses across all M estimators.
+        Forward pass for a SINGLE data point x.
+        Returns: (M,) vector.
         """
-        # We use vmap to run .loss() on the batched model.
-        # vmap automatically "peels" the leading dimension (M) off every parameter in batched_model.
+        # We vmap over the models (axis 0 of batched_model), 
+        # but broadcast 'x' (None) so it feeds into all models.
+        return jax.vmap(lambda m: m(x, **kwargs))(self.batched_model)
+
+    def predict(self, X: jnp.ndarray, **kwargs):
+        """
+        Returns stacked predictions for all outputs.
+        Output Shape: (N, M)
+        """
+        # 1. Run prediction. Result shape is (M, N) because M is the batch dim
+        outs = jax.vmap(lambda m: m.predict(X, **kwargs))(self.batched_model)
         
-        # Define the function to call on a SINGLE instance
+        # 2. Helper to transpose (M, N) -> (N, M)
+        def _transpose(arr):
+            if isinstance(arr, jnp.ndarray) and arr.ndim == 2:
+                return arr.T
+            return arr
+
+        # 3. Handle Tuple outputs (e.g. mean, var)
+        if isinstance(outs, tuple):
+            return tuple(_transpose(o) for o in outs)
+            
+        return _transpose(outs)
+
+
+class _MultiOutputInternal(_MultiOutputBase):
+    """
+    Subclass specifically for models that have an internal loss (like GPs).
+    This exposes the .loss() method so the fit() function can find it.
+    """
+    def loss(self):
+        """Computes the sum of losses across all M estimators."""
         def single_loss(model):
             return model.loss()
             
-        # Vectorize it
+        # vmap over the M models
         all_losses = jax.vmap(single_loss)(self.batched_model)
-        
         return jnp.sum(all_losses)
 
-    def predict(self, x_star: jnp.ndarray, **kwargs):
-        """
-        Returns stacked predictions for all outputs.
-        """
-        def single_predict(model):
-            return model.predict(x_star, **kwargs)
 
-        # Returns (M, ...) e.g. means of shape (M,)
-        return jax.vmap(single_predict)(self.batched_model)
+def MultiOutputRegressor(
+    X: jnp.ndarray, 
+    Y: jnp.ndarray, 
+    make_regressor_fn: Callable[[jnp.ndarray, jnp.ndarray], eqx.Module]
+) -> Union[_MultiOutputBase, _MultiOutputInternal]:
+    """
+    Factory function that returns the correct MultiOutput wrapper.
+    
+    - If the base model has a .loss() method (e.g. GP), it returns a wrapper with .loss().
+    - If the base model does NOT (e.g. LinearReg), it returns a wrapper without it.
+    """
+    # 1. Instantiate a dummy model to inspect it
+    dummy_model = make_regressor_fn(X, Y[:, 0])
+    
+    # 2. Check if it implements the Internal Loss protocol
+    has_internal_loss = hasattr(dummy_model, 'loss')
+    
+    # 3. Return the appropriate class instance
+    if has_internal_loss:
+        return _MultiOutputInternal(X, Y, make_regressor_fn)
+    else:
+        return _MultiOutputBase(X, Y, make_regressor_fn)

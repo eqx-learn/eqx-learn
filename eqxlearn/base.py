@@ -10,8 +10,8 @@ class BaseModel(eqx.Module, ABC):
     pass
 
 class Regressor(eqx.Module, ABC):
+    @eqx.filter_jit
     @abstractmethod
-    # @eqx.filter_jit
     def __call__(self, x: jnp.ndarray, **kwargs) -> jnp.ndarray:
         raise NotImplementedError
 
