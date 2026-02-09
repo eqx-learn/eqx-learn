@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "eqx-learn"
+version = "0.1.0"
+description = "Classical machine learning using JAX and Equinox"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.9"
+authors = [
+    {name = "eqx-learn contributors"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "jax>=0.4.0",
+    "equinox>=0.11.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/eqx-learn/eqx-learn"
+Repository = "https://github.com/eqx-learn/eqx-learn"
+
+[tool.hatch.build.targets.wheel]
+packages = ["eqxlearn"]
