@@ -1,18 +1,20 @@
 import jax
 import jax.numpy as jnp
 import equinox as eqx
+from paramax import non_trainable
 
+from eqxlearn.base import Regressor
 from eqxlearn.gaussian_process.kernels import Kernel
 
-class GaussianProcessRegressor(eqx.Module):
+class GaussianProcessRegressor(Regressor):
     """
     Standard GP Regressor for a single output dimension.
     """
     kernel: Kernel
     log_obs_noise: jnp.ndarray
     
-    X: jnp.ndarray = eqx.field(static=True)
-    y: jnp.ndarray = eqx.field(static=True)
+    X: jnp.ndarray
+    y: jnp.ndarray
 
     def __init__(self, X: jnp.ndarray, y: jnp.ndarray, kernel: Kernel, obs_noise: float = 1e-4):
         """
@@ -22,12 +24,16 @@ class GaussianProcessRegressor(eqx.Module):
             kernel: Kernel instance
             obs_noise: Observation noise (jitter/likelihood noise)
         """
-        self.X = X
-        self.y = y
+        N, _D = X.shape
+        if len(y.shape) != 1 and y.shape[0] != N:
+            raise Exception("Incompatible shapes for X and y passed")
+
+        self.X = non_trainable(X)
+        self.y = non_trainable(y)
         self.kernel = kernel
         self.log_obs_noise = jnp.log(obs_noise)
 
-    def predict(self, x_star: jnp.ndarray, return_var: bool = False):
+    def __call__(self, x: jnp.ndarray, return_var: bool = False):
         """
         Predicts mean and variance for a single test point x_star.
         """
@@ -40,7 +46,7 @@ class GaussianProcessRegressor(eqx.Module):
         L = jnp.linalg.cholesky(K_y)
 
         # Compute k_star (covariance between x_star and training data)
-        k_star = jax.vmap(lambda x: k_fn(x_star, x))(self.X)
+        k_star = jax.vmap(lambda x: k_fn(x, x))(self.X)
 
         # Calculate Mean: mu = k_star^T K^-1 y
         z = jax.scipy.linalg.solve_triangular(L, self.y, lower=True)
@@ -51,7 +57,7 @@ class GaussianProcessRegressor(eqx.Module):
             return mu
 
         # Calculate Variance: k(x*, x*) - k_star^T K^-1 k_star
-        k_star_star = k_fn(x_star, x_star)
+        k_star_star = k_fn(x, x)
         v = jax.scipy.linalg.solve_triangular(L, k_star, lower=True)
         var = k_star_star - jnp.dot(v, v)
         

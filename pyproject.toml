@@ -27,6 +27,8 @@ classifiers = [
 dependencies = [
     "jax>=0.4.0",
     "equinox>=0.11.0",
+    "tqdm",
+    "paramax",
 ]
 
 [project.urls]

@@ -1,6 +1,5 @@
 from eqxlearn.gaussian_process.kernels import Kernel, RBFKernel, ConstantKernel, WhiteNoiseKernel
 from eqxlearn.gaussian_process.regressor import GaussianProcessRegressor
-from eqxlearn.gaussian_process.train import fit
 
 __all__ = [
     "GaussianProcessRegressor",
@@ -9,5 +8,4 @@ __all__ = [
     "RBFKernel", 
     "ConstantKernel", 
     "WhiteNoiseKernel",
-    "fit",
 ]
