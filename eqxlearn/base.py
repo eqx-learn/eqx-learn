@@ -16,9 +16,8 @@ class Regressor(eqx.Module, ABC):
         raise NotImplementedError
 
     @eqx.filter_jit
-    def predict(self, X: jnp.ndarray):
-        # return jax.vmap(paramax.unwrap(self))(X)
-        return jax.vmap(self)(X)
+    def predict(self, X: jnp.ndarray, **kwargs):
+        return jax.vmap(lambda x: self(x, **kwargs))(X)
     
 class Transformer(eqx.Module):
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:

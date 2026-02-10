@@ -12,17 +12,22 @@ from eqxlearn.train.losses import MeanSquaredError
 
 def fit(
     model: eqx.Module,
+    learning_rate: float | None = None,
     optimizer: Optional[optax.GradientTransformation] = None,
     X: Optional[jnp.ndarray] = None,
     y: Optional[jnp.ndarray] = None,
     loss_fn: Optional[Union[Callable, eqx.Module]] = None,
     key: Optional[jax.random.PRNGKey] = None,
-    max_steps: int = 1000,
+    max_iter: int = 1000,
     patience: int = 10,
     show_progress: bool = True,
 ) -> Tuple[eqx.Module, List[float]]:
+    if optimizer is not None and learning_rate is not None:
+        raise Exception("Cannot pass 'optimizer' and 'learning_rate' to 'fit'")
+        
     if optimizer is None:
-        optimizer = optax.adam(learning_rate=0.1)
+        learning_rate = learning_rate or 0.1
+        optimizer = optax.adam(learning_rate=learning_rate)
     
     # 1. Partition the model
     # We filter out non-trainable leaves using Paramax
@@ -108,7 +113,7 @@ def fit(
     # -------------------------------------------------------------------------
 
     # 3. Training Loop
-    loop = tqdm(range(max_steps), disable=not show_progress)
+    loop = tqdm(range(max_iter), disable=not show_progress)
     losses = []
     
     # We prepare the arguments for the step function
