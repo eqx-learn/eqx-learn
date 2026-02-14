@@ -1,26 +1,41 @@
 from abc import ABC, abstractmethod
+from typing import Optional, Tuple, Any, Union, Self
 
 import jax
 import jax.numpy as jnp
 import equinox as eqx
 from eqxlearn.metrics import r2_score
 
-import paramax
-
 class BaseModel(eqx.Module, ABC):
-    pass
-
-class Regressor(BaseModel, ABC):
-    @eqx.filter_jit
+    """
+    Root class for all eqxlearn objects.
+    Enforces JAX-compatible forward pass structure.
+    """
     @abstractmethod
     def __call__(self, x: jnp.ndarray, **kwargs) -> jnp.ndarray:
+        """
+        Forward pass for a SINGLE sample `x`.
+        Subclasses should implement the logic for one data point.
+        """
         raise NotImplementedError
 
-    @eqx.filter_jit
-    def predict(self, X: jnp.ndarray, **kwargs):
+class Estimator(BaseModel, ABC):
+    """
+    Base class for models that predict a target `y` from features `X`.
+    Provides a default batched `predict` method via vmap.
+    """
+    def predict(self, X: jnp.ndarray, **kwargs) -> jnp.ndarray:
+        """
+        Predicts targets for a batch of samples `X`.
+        Default implementation vmaps the single-sample `__call__`.
+        """
+        # We allow subclasses to override this for specialized batched inference
         return jax.vmap(lambda x: self(x, **kwargs))(X)
-    
-    @eqx.filter_jit
+
+class Regressor(Estimator):
+    """
+    Base class for regression models.
+    """
     def score(self, X: jnp.ndarray, y: jnp.ndarray, **kwargs) -> jnp.ndarray:
         """
         Returns the coefficient of determination R^2 of the prediction.
@@ -31,15 +46,28 @@ class Regressor(BaseModel, ABC):
         if isinstance(y_pred, tuple):
             y_pred = y_pred[0]
             
-        return r2_score(y, y_pred)    
-    
-class Transformer(BaseModel):
-    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        return self.transform(x)
-    
-    def transform(self, X: jnp.ndarray) -> jnp.ndarray:
-        raise NotImplementedError
+        return r2_score(y, y_pred)
 
-    def inverse_transform(self, X: jnp.ndarray) -> jnp.ndarray:
+class Transformer(BaseModel):
+    """
+    Base class for transformers.
+    Contract: Subclass implements `__call__` (single sample forward).
+    """
+    def transform(self, X: jnp.ndarray, **kwargs) -> jnp.ndarray:
+        """
+        Batched transformation.
+        Automatically vectorizes the single-sample __call__.
+        """
+        return jax.vmap(lambda x: self(x, **kwargs))(X)
+
+class InvertibleTransformer(Transformer):
+    """
+    Extension for transformers that can reverse their mapping.
+    """
+    @abstractmethod
+    def inverse(self, x: jnp.ndarray, **kwargs) -> jnp.ndarray:
+        """
+        Inverse pass for a SINGLE sample `x`.
+        Subclasses must implement this.
+        """
         raise NotImplementedError
-        

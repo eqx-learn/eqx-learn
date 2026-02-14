@@ -1,96 +1,118 @@
 import jax
 import jax.numpy as jnp
 import equinox as eqx
-from typing import Callable, Union, Tuple
+from typing import Callable, Optional, Union, Any, Tuple, Self, TYPE_CHECKING
+from dataclasses import replace
+import inspect
 
 from eqxlearn.base import Regressor
 
-class _MultiOutputBase(Regressor):
-    """
-    Base class for Multi-Output regression. 
-    Handles prediction and forward pass, but NOT loss.
-    """
-    batched_model: eqx.Module
+# --- Mixins ---
 
-    def __init__(
-        self, 
-        X: jnp.ndarray, 
-        Y: jnp.ndarray, 
-        make_regressor_fn: Callable[[jnp.ndarray, jnp.ndarray], eqx.Module]
-    ):
-        N, M = Y.shape
-        # Instantiate M independent models
-        list_of_models = [make_regressor_fn(X, Y[:, i]) for i in range(M)]
+class _MOSolveMixin:
+    def solve(self, X: jnp.ndarray, Y: jnp.ndarray) -> Self:
+        model = self._ensure_init(Y)
+        M = model._output_dim
+        X_stack = jnp.broadcast_to(X, (M,) + X.shape)
+        Y_stack = Y.T 
+        new_batched = jax.vmap(lambda m, x, y: m.solve(x, y))(model.batched, X_stack, Y_stack)
+        return replace(model, batched=new_batched)
+
+class _MOConditionMixin:
+    def condition(self, X: jnp.ndarray, Y: jnp.ndarray) -> Self:
+        model = self._ensure_init(Y)
+        M = model._output_dim
+        X_stack = jnp.broadcast_to(X, (M,) + X.shape)
+        Y_stack = Y.T 
+        new_batched = jax.vmap(lambda m, x, y: m.condition(x, y))(model.batched, X_stack, Y_stack)
+        return replace(model, batched=new_batched)
+
+class _MOInjectMixin:
+    def condition(self, X: jnp.ndarray, Y: jnp.ndarray) -> Self:
+        model = self._ensure_init(Y)
+        M = model._output_dim
+        X_stack = jnp.broadcast_to(X, (M,) + X.shape)
+        Y_stack = Y.T 
+        new_batched = replace(model.batched, X=X_stack, y=Y_stack)
+        return replace(model, batched=new_batched)
+
+class _MOLossMixin:
+    def loss(self, key=None):
+        if self.batched is None: raise RuntimeError("Uninitialized.")
+        def single_loss(model, k):
+            if 'key' in inspect.signature(model.loss).parameters: return model.loss(key=k)
+            return model.loss()
+        keys = None
+        if key is not None: keys = jax.random.split(key, self._output_dim)
+        if keys is not None: all_losses = jax.vmap(single_loss)(self.batched, keys)
+        else: all_losses = jax.vmap(lambda m: single_loss(m, None))(self.batched)
+        return jnp.sum(all_losses)
+
+# --- Class ---
+
+class MultiOutputRegressor(Regressor):
+    """
+    Wraps a batch of independent estimators to predict multiple targets.
+    """
+    batched: Optional[eqx.Module] = None
+    make_regressor_fn: Callable[[Any, Any], eqx.Module] = eqx.field(static=True)
+    _output_dim: Optional[int] = eqx.field(static=True, default=None)
+
+    def __new__(cls, make_regressor_fn: Callable[[Any, Any], eqx.Module], *args, **kwargs):
+        if cls.__name__ != "MultiOutputRegressor":
+            return super().__new__(cls)
+
+        dummy = make_regressor_fn(None, None)
+        mixins = []
+        if hasattr(dummy, 'solve'): mixins.append(_MOSolveMixin)
+        if hasattr(dummy, 'condition'): mixins.append(_MOConditionMixin)
+        elif hasattr(dummy, 'loss') and hasattr(dummy, 'X'): mixins.append(_MOInjectMixin)
+        if hasattr(dummy, 'loss'): mixins.append(_MOLossMixin)
         
-        # Stack them into a single Batched PyTree
-        # The resulting object looks like the original model, 
-        # but every array leaf has an extra leading dimension (M).
-        self.batched_model = jax.tree.map(lambda *args: jnp.stack(args), *list_of_models)
+        bases = tuple(mixins + [cls])
+        cls_name = "MultiOutputRegressor" + "".join([m.__name__.replace('_', '').replace('MO', '').replace('Mixin', '') for m in mixins])
+        DynamicMultiOutput = type(cls_name, bases, {})
+        return super().__new__(DynamicMultiOutput)
+
+    def __init__(self, make_regressor_fn, X=None, Y=None, output_dim=None):
+        self.make_regressor_fn = make_regressor_fn
+        dim = output_dim
+        if Y is not None: dim = Y.shape[1]
+        if dim is not None:
+            self._output_dim = dim
+            self.batched = self._create_batch(dim, X, Y)
+        else:
+            self._output_dim = None
+            self.batched = None
+
+    def _create_batch(self, M, X, Y):
+        if X is not None and Y is not None:
+            list_of_models = [self.make_regressor_fn(X, Y[:, i]) for i in range(M)]
+        else:
+            list_of_models = [self.make_regressor_fn(None, None) for i in range(M)]
+        return eqx.filter_vmap(lambda x: x)(jax.tree.map(lambda *args: jnp.stack(args), *list_of_models))
+
+    def _ensure_init(self, Y):
+        if self.batched is not None:
+            if Y.shape[1] != self._output_dim: raise ValueError("Dimension mismatch")
+            return self
+        M = Y.shape[1]
+        new_batched = self._create_batch(M, None, None)
+        return replace(self, batched=new_batched, _output_dim=M)
+
+    @property
+    def X(self): return getattr(self.batched, 'X', None) if self.batched else None
+    
+    @property
+    def y(self): return getattr(self.batched, 'y', None) if self.batched else None
 
     def __call__(self, x: jnp.ndarray, **kwargs):
         """
-        Forward pass for a SINGLE data point x.
-        Returns: (M,) vector.
+        Single-sample forward pass. Returns (M,) vector.
         """
-        # We vmap over the models (axis 0 of batched_model), 
-        # but broadcast 'x' (None) so it feeds into all models.
-        return jax.vmap(lambda m: m(x, **kwargs))(self.batched_model)
-
-    def predict(self, X: jnp.ndarray, **kwargs):
-        """
-        Returns stacked predictions for all outputs.
-        Output Shape: (N, M)
-        """
-        # 1. Run prediction. Result shape is (M, N) because M is the batch dim
-        outs = jax.vmap(lambda m: m.predict(X, **kwargs))(self.batched_model)
-        
-        # 2. Helper to transpose (M, N) -> (N, M)
-        def _transpose(arr):
-            if isinstance(arr, jnp.ndarray) and arr.ndim == 2:
-                return arr.T
-            return arr
-
-        # 3. Handle Tuple outputs (e.g. mean, var)
-        if isinstance(outs, tuple):
-            return tuple(_transpose(o) for o in outs)
-            
-        return _transpose(outs)
-
-
-class _MultiOutputInternal(_MultiOutputBase):
-    """
-    Subclass specifically for models that have an internal loss (like GPs).
-    This exposes the .loss() method so the fit() function can find it.
-    """
-    def loss(self):
-        """Computes the sum of losses across all M estimators."""
-        def single_loss(model):
-            return model.loss()
-            
-        # vmap over the M models
-        all_losses = jax.vmap(single_loss)(self.batched_model)
-        return jnp.sum(all_losses)
-
-
-def MultiOutputRegressor(
-    X: jnp.ndarray, 
-    Y: jnp.ndarray, 
-    make_regressor_fn: Callable[[jnp.ndarray, jnp.ndarray], eqx.Module]
-) -> Union[_MultiOutputBase, _MultiOutputInternal]:
-    """
-    Factory function that returns the correct MultiOutput wrapper.
+        return jax.vmap(lambda m: m(x, **kwargs))(self.batched)
     
-    - If the base model has a .loss() method (e.g. GP), it returns a wrapper with .loss().
-    - If the base model does NOT (e.g. LinearReg), it returns a wrapper without it.
-    """
-    # 1. Instantiate a dummy model to inspect it
-    dummy_model = make_regressor_fn(X, Y[:, 0])
-    
-    # 2. Check if it implements the Internal Loss protocol
-    has_internal_loss = hasattr(dummy_model, 'loss')
-    
-    # 3. Return the appropriate class instance
-    if has_internal_loss:
-        return _MultiOutputInternal(X, Y, make_regressor_fn)
-    else:
-        return _MultiOutputBase(X, Y, make_regressor_fn)
+    if TYPE_CHECKING:
+        def solve(self, X: jnp.ndarray, y: Optional[jnp.ndarray] = None) -> Self: ...
+        def condition(self, X: jnp.ndarray, y: Optional[jnp.ndarray] = None) -> Self: ...
+        def loss(self, key=None) -> jnp.ndarray: ...
