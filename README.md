@@ -4,13 +4,13 @@ A minimal, classical machine learning library built on [JAX](https://github.com/
 
 ## Overview
 
-`eqx-learn` implements classical machine learning algorithms (Linear Regression, PCA, Gaussian Processes, etc.) within the JAX/Equinox eco-system. It provides an API that is highly inspired by scikit-learn, but adapted for JAX's functional programming paradigm.
+`eqx-learn` implements classical machine learning algorithms (Linear Regression, PCA, Gaussian Processes, etc.) within the JAX/Equinox eco-system. It provides an API that is highly inspired by scikit-learn, but adapted for JAX's functional programming paradigm. All models are Equinox modules and therefore JAX PyTrees, allowing full differentiability.
 
 NB: This library is currently in very early stages of development, focusing mainly on simple regression algorithms. However, the API has been carefully thought out, and pull requests for additional models, algorithms and utilities are more than welcome!
 
 ## Installation
 
-You can install eqx-learn directly from the GitHub. Ensure you have a working JAX installation (CPU or GPU) first.
+You can install `eqx-learn` directly from the GitHub. Ensure you have a working JAX installation (CPU or GPU) first.
 Then, using pip:
 ```bash
 pip install git+https://github.com/eqx-learn/eqx-learn.git
@@ -32,8 +32,9 @@ from eqxlearn import fit
 X = jnp.linspace(0, 10, 50)[:, None]
 y = 3.5 * X.squeeze() + 2.0 + jr.normal(jr.key(0), (50,))
 
-# Solve the OLS problem using fit(). In its defaulty mode, this calls the analytic solution provided by LinearRegressor.solve(...).
-# To use an iterative solution (e.g. for larger problems), simply pass fit(..., solution='iterative').
+# Solve the OLS problem using fit(). In its default mode, this calls the analytic solution provided by,
+# LinearRegressor.solve(...). To use an iterative solution (e.g. for larger problems), simply pass
+# fit(..., solution='iterative'). Note; LinearRegressor inherits from Regressor -> BaseModel -> eqx.Module
 model = LinearRegressor()
 model, _ = fit(model, X, y)
 
@@ -79,8 +80,9 @@ model = TransformedTargetRegressor(
 # 3. Fit the model
 # fit() inspects the requirements/capabilities of the model being passed.
 # This includes conditioning on data via model.condition(), and exact solutions via model.solve().
-# Then, fit() runs iterative optimization on the model (using e.g. the adam optimizer).
-model, history = fit(model, X, y)
+# For wrapper models (e.g. Pipeline, TransformedTargetRegressor), these are forwarded appropriately.
+# Then, fit() runs iterative optimization on the model (using e.g. the optax adam optimizer).
+model, losses = fit(model, X, y)
 
 # 4. Make predictions
 X_test = X_SCALE * jnp.linspace(0, 10, 100)[:, None]
@@ -103,3 +105,31 @@ plt.show()
 ```
 
 ## Key Differences from scikit-learn
+
+### Immutability & The `fit` Function
+
+In `eqx-learn`, models are immutable PyTrees, since they derive from Equinox's `Module`. Unlike scikit-learn, calling fit is not a member function that updates attributes in place. Instead, it returns a new instance of the model with updated parameters. You must capture this return value:
+```python
+model, history = fit(model, X, y)
+```
+
+### Native Equinox Compatibility
+
+Every estimator and transformer is a standard `eqx.Module`. This means you can use them anywhere in the JAX ecosystem:
+- Differentiable: You can take gradients through the model parameters or inputs using jax.grad.
+- JIT-table: The entire forward pass (`__call__`) is compatible with jax.jit.
+- Composable: You can use them inside your own custom training loops or neural network architectures.
+
+### Explicit Protocols and Single-Sample Logic
+
+Instead of a monolithic `fit` method, models implement specific protocols based on their mathematical nature:
+- `solve(X, y)`: Returns exact analytical parameters (e.g., OLS, PCA).
+- `condition(X, y)`: Updates belief state (e.g., GPs).
+- `loss()`: Defines a custom objective for gradient descent.
+
+Furthermore, models implement single-sample logic via `__call__(x)`. Batching is handled automatically by the base class via jax.vmap, simplifying implementation.
+
+### Strict Dimensionality
+eqx-learn avoids silent broadcasting. A `Regressor` strictly expects a target vector of shape `(N,)`.
+- If your target is `(N, 1)` or `(N, M)`, you must explicitly wrap your model in `MultiOutputRegressor`.
+- Transformers (like `StandardScaler`) support polymorphic inversion, accepting `(mean, variance)` tuples to correctly propagate uncertainty through pipelines.
