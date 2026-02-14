@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 import equinox as eqx
-from typing import Optional, Tuple, Self
+from typing import Optional, Tuple, Self, Union, Any
 from dataclasses import replace
 
 from eqxlearn.base import InvertibleTransformer
@@ -23,12 +23,14 @@ class PCA(InvertibleTransformer):
     # --- Hyperparameters ---
     n_components: Optional[int] = eqx.field(static=True, default=None)
     error_threshold: Optional[float] = eqx.field(static=True, default=None)
+    min_components: Optional[int] = eqx.field(static=True, default=None)
     max_components: Optional[int] = eqx.field(static=True, default=None)
 
     def __init__(
         self, 
         n_components: Optional[int] = None, 
         error_threshold: Optional[float] = None,
+        min_components: Optional[int] = None,
         max_components: Optional[int] = None,
         # State args for reconstruction/deserialization
         components: Optional[jnp.ndarray] = None,
@@ -47,6 +49,7 @@ class PCA(InvertibleTransformer):
 
         self.n_components = n_components
         self.error_threshold = error_threshold
+        self.min_components = min_components
         self.max_components = max_components
         
         # Initialize state
@@ -81,49 +84,84 @@ class PCA(InvertibleTransformer):
             loop_limit = full_rank
             if self.max_components is not None:
                 loop_limit = min(self.max_components, full_rank)
+            loop_start = 1
+            if self.min_components is not None:
+                loop_start = min(self.min_components, full_rank)
 
             # Start from min_components!
-            # Default if loop doesn't break
-            final_k = loop_limit 
-            
-            for k in range(1, loop_limit + 1):
+            for k in range(loop_start, loop_limit + 1):
                 V_k = Vt[:k, :]
                 coeff = Xc @ V_k.conj().T
                 X_rec = coeff @ V_k
                 
                 current_error = jnp.max(jnp.abs(Xc - X_rec))
                 if current_error < self.error_threshold:
-                    final_k = k
                     break
+            final_k = k
 
         components = Vt[:final_k, :]
         
         # Update n_components to reflect what was actually chosen
         return replace(self, components=components, mean=mean, input_shape=input_shape, n_components=final_k)
 
-    def __call__(self, x: jnp.ndarray, **kwargs) -> jnp.ndarray:
+    def __call__(self, x: Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]], **kwargs) -> Any:
         """
-        Forward pass: Project data onto principal components.
-        Args:
-            x: Input sample of shape `input_shape`.
-        Returns:
-            Projected scores of shape (n_components,).
+        Forward: Data Space -> Latent Space
+        Propagates variance: Var(z) = Var(x) @ (Components.T)^2
         """
-        if self.components is None: raise RuntimeError("PCA not fitted")
+        if self.components is None or self.mean is None:
+            raise RuntimeError("PCA is not fitted. Call solve() first.")
+
+        # 1. Handle Variance Tuple
+        var_in = None
+        if isinstance(x, tuple):
+            x, var_in = x
         
+        # 2. Transform Mean
         x_flat = x.ravel()
         centered = x_flat - self.mean
-        return centered @ self.components.T.conj()
-    
-    def inverse(self, x: jnp.ndarray, **kwargs) -> jnp.ndarray:
-        """
-        Inverse pass: Reconstruct data from principal components.
-        Args:
-            x: Scores of shape (n_components,).
-        Returns:
-            Reconstructed data of shape `input_shape`.
-        """
-        if self.components is None: raise RuntimeError("PCA not fitted")
+        mean_out = self.components @ centered
 
-        x_rec_flat = x @ self.components + self.mean
-        return x_rec_flat.reshape(self.input_shape)
+        # 3. Transform Variance
+        if var_in is not None:
+            var_flat = var_in.ravel()
+            # Squared weights for variance propagation
+            # Components shape: (K, D)
+            # We want: (K, D) @ (D,) -> (K,)
+            V_sq = jnp.abs(self.components)**2
+            var_out = V_sq @ var_flat
+            return mean_out, var_out
+
+        return mean_out
+
+    def inverse(self, x: Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]], **kwargs) -> Any:
+        """
+        Inverse: Latent Space -> Data Space
+        Propagates variance: Var(x) = Var(z) @ (Components)^2
+        """
+        if self.components is None or self.mean is None:
+            raise RuntimeError("PCA is not fitted. Call solve() first.")
+
+        # 1. Handle Variance Tuple
+        var_in = None
+        if isinstance(x, tuple):
+            x, var_in = x
+        
+        # 2. Transform Mean
+        x_rec_centered = x @ self.components # (K,) @ (K, D) -> (D,)
+        x_rec_flat = x_rec_centered + self.mean
+        mean_out = x_rec_flat.reshape(self.input_shape)
+
+        # 3. Transform Variance
+        if var_in is not None:
+            # Squared weights
+            # We use transpose here because we are mapping backwards
+            # var_in: (K,)
+            # V_sq: (K, D)
+            # Result: (K,) @ (K, D) -> (D,)
+            V_sq = jnp.abs(self.components)**2
+            var_flat = var_in @ V_sq
+            var_out = var_flat.reshape(self.input_shape)
+            return mean_out, var_out
+
+        return mean_out
