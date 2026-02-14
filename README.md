@@ -4,9 +4,9 @@ A minimal, classical machine learning library built on [JAX](https://github.com/
 
 ## Overview
 
-`eqx-learn` implements classical machine learning algorithms (Linear Regression, PCA, Gaussian Processes, etc.) in a fully differentiable, GPU-accelerated framework.
+`eqx-learn` implements classical machine learning algorithms (Linear Regression, PCA, Gaussian Processes, etc.) within the JAX/Equinox eco-system. It provides an API that is highly inspired by scikit-learn, but adapted for JAX's functional programming paradigm.
 
-It provides an API that is highly inspired by scikit-learn, but adapted for JAX's functional programming paradigm.
+NB: This library is currently in very early stages of development, focusing mainly on simple regression algorithms. However, the API has been carefully thought out, and pull requests for additional models, algorithms and utilities are more than welcome!
 
 ## Installation
 
@@ -17,6 +17,8 @@ pip install git+https://github.com/eqx-learn/eqx-learn.git
 ```
 
 ## Example: Linear Regression
+
+This example demonstrates a simple linear regression implementation using the analytic OLS solution.
 
 ```python
 import jax.numpy as jnp
@@ -30,8 +32,8 @@ from eqxlearn import fit
 X = jnp.linspace(0, 10, 50)[:, None]
 y = 3.5 * X.squeeze() + 2.0 + jr.normal(jr.key(0), (50,))
 
-# Initialize and solve using fit(), which calls the analytical solution provided by LinearRegressor.solve(...).
-# To use an iterative solution (e.g. for larger problems), simply pass solution = 'iterative'.
+# Solve the OLS problem using fit(). In its defaulty mode, this calls the analytic solution provided by LinearRegressor.solve(...).
+# To use an iterative solution (e.g. for larger problems), simply pass fit(..., solution='iterative').
 model = LinearRegressor()
 model, _ = fit(model, X, y)
 
@@ -42,49 +44,61 @@ plt.scatter(X, y, color='black')
 plt.plot(X_test, y_test)
 ```
 
-## Example: Gaussian Process Regression
+## Example: Gaussian Process Regression with Scaled Data
+
+This example demonstrates a full machine learning pipeline for gaussian process regression. The code fits an RBF kernel to scaled input data, and then makes scaled output predictions.
 
 ```python
 import jax.numpy as jnp
 import jax.random as jr
-from eqxlearn.pipeline import Pipeline
+import matplotlib.pyplot as plt
+
 from eqxlearn.preprocessing import StandardScaler
-from eqxlearn.decomposition import PCA
 from eqxlearn.gaussian_process import GaussianProcessRegressor
 from eqxlearn.gaussian_process.kernels import RBFKernel, WhiteNoiseKernel
-from eqxlearn.train import fit
+from eqxlearn.pipeline import Pipeline
+from eqxlearn.compose import TransformedTargetRegressor
+from eqxlearn import fit
 
-# Data
-key = jr.PRNGKey(1)
-X = jnp.linspace(0, 10, 30)[:, None]
-y = jnp.sin(X).squeeze() * 10.0 + jr.normal(key, (30,))
+# 1. Generate scaled data
+X_SCALE, Y_SCALE = 0.01, 100.0
+X = X_SCALE * jnp.linspace(0, 10, 30)[:, None]
+y = Y_SCALE * (jnp.sin(X / X_SCALE).squeeze() + 0.1 * jr.normal(jr.key(1), (30,)))
 
-# Setup Pipeline
-# Note: GP usually predicts in the scaled Y space, 
-# so we use inverse_scaler at the end to map back to the 10.0 magnitude.
-y_scaler = StandardScaler().solve(y[:, None])
+# 2. Create the model with scaled inputs and outputs
 kernel = RBFKernel() + WhiteNoiseKernel(0.01)
-
-pipe = Pipeline([
-    ("scaler", StandardScaler()),
-    ("pca", PCA(min_components=1)),
-    ("gp", GaussianProcessRegressor(kernel=kernel)),
-    ("inv_scaler", y_scaler.inverse_scaler())
+pipeline = Pipeline([
+    ("scaler_x", StandardScaler()),
+    ("gp", GaussianProcessRegressor(kernel=kernel))
 ])
+model = TransformedTargetRegressor(
+    regressor=pipeline,
+    transformer=StandardScaler()
+)
 
-# 1. Fit the analytical parts (Scaler, PCA) and inject data into GP
-# 2. Optimize GP hyperparameters iteratively
-pipe, history = fit(pipe, X=X, y=y, steps=200, learning_rate=0.01)
+# 3. Fit the model
+# fit() inspects the requirements/capabilities of the model being passed.
+# This includes conditioning on data via model.condition(), and exact solutions via model.solve().
+# Then, fit() runs iterative optimization on the model (using e.g. the adam optimizer).
+model, history = fit(model, X, y)
 
-# Predict and Invert
-# The pipe automatically runs: Scale -> PCA -> GP -> InverseScale
-X_test = jnp.linspace(0, 10, 100)[:, None]
-predictions = pipe.predict(X_test)
+# 4. Make predictions
+X_test = X_SCALE * jnp.linspace(0, 10, 100)[:, None]
+predictions, variance = model.predict(X_test, return_var=True)
+std_dev = jnp.sqrt(variance)
 
-import matplotlib.pyplot as plt
-plt.scatter(X, y, label="Actual")
-plt.plot(X_test, predictions, color='red', label="Pipeline Prediction")
+# Plot
+plt.figure(figsize=(10, 5))
+plt.scatter(X, y, label="Training Data", color="black")
+plt.plot(X_test, predictions, label="Model Prediction", color="blue")
+plt.fill_between(
+    X_test.squeeze(), 
+    predictions - 1.96 * std_dev, 
+    predictions + 1.96 * std_dev, 
+    alpha=0.2, color="blue", label="95% CI"
+)
 plt.legend()
+plt.title("GP with Feature & Target Scaling")
 plt.show()
 ```
 

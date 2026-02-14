@@ -1,9 +1,33 @@
+import inspect
 import jax
 import jax.numpy as jnp
-import equinox as eqx
 from typing import List, Tuple, Union, Any, Optional, Self, TYPE_CHECKING
 from dataclasses import replace
-from eqxlearn.base import Transformer, Estimator
+from eqxlearn.base import BaseModel, Transformer, Estimator
+
+# --- Helpers ---
+
+def _filter_kwargs(func: Any, kwargs: dict) -> dict:
+    """
+    Inspects func signature and returns a dict containing only the kwargs 
+    that func accepts. If func accepts **kwargs, returns all kwargs.
+    """
+    try:
+        sig = inspect.signature(func)
+    except ValueError:
+        # Fallback for some built-ins or JIT-compiled functions if signature fails
+        return kwargs
+
+    params = sig.parameters.values()
+    
+    # If the function accepts **kwargs (VAR_KEYWORD), it accepts everything.
+    for param in params:
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            return kwargs
+
+    # Otherwise, filter keys to match explicit arguments
+    valid_keys = set(p.name for p in params)
+    return {k: v for k, v in kwargs.items() if k in valid_keys}
 
 # --- Mixins ---
 
@@ -12,8 +36,11 @@ class _SolveMixin:
         X_curr = X
         new_steps = []
         for name, step in self.steps[:-1]:
-            if hasattr(step, "solve"): step = step.solve(X_curr, y)
+            if hasattr(step, "solve"): 
+                step = step.solve(X_curr, y)
             new_steps.append((name, step))
+            # Note: transform usually doesn't take kwargs in this API design, 
+            # so we leave it as is.
             X_curr = step.transform(X_curr)
             
         last_name, last_step = self.steps[-1]
@@ -26,8 +53,10 @@ class _ConditionMixin:
         X_curr = X
         new_steps = []
         for name, step in self.steps[:-1]:
-            if hasattr(step, "solve"): step = step.solve(X_curr, y)
-            elif hasattr(step, "condition"): step = step.condition(X_curr, y)
+            if hasattr(step, "solve"): 
+                step = step.solve(X_curr, y)
+            elif hasattr(step, "condition"): 
+                step = step.condition(X_curr, y)
             new_steps.append((name, step))
             X_curr = step.transform(X_curr)
             
@@ -44,7 +73,10 @@ class _ConditionMixin:
 
 class _LossMixin:
     def loss(self, **kwargs):
-        return self.steps[-1][1].loss(**kwargs)
+        step = self.steps[-1][1]
+        # Filter kwargs for the loss method of the final step
+        filtered_kwargs = _filter_kwargs(step.loss, kwargs)
+        return step.loss(**filtered_kwargs)
 
 # --- Class ---
 
@@ -52,9 +84,9 @@ class Pipeline(Estimator):
     """
     Sequentially applies a list of transforms and a final estimator.
     """
-    steps: List[Tuple[str, eqx.Module]]
+    steps: List[Tuple[str, BaseModel]]
 
-    def __new__(cls, steps: List[Union[eqx.Module, Tuple[str, eqx.Module]]]):
+    def __new__(cls, steps: List[Union[BaseModel, Tuple[str, BaseModel]]]):
         # Guard: If already a specialized subclass, skip factory
         if cls.__name__ != "Pipeline":
             return super().__new__(cls)
@@ -77,7 +109,7 @@ class Pipeline(Estimator):
         DynamicPipeline = type(cls_name, bases, {})
         return super().__new__(DynamicPipeline)
 
-    def __init__(self, steps: List[Union[eqx.Module, Tuple[str, eqx.Module]]]):
+    def __init__(self, steps: List[Union[BaseModel, Tuple[str, BaseModel]]]):
         if not steps:
             raise ValueError("Pipeline must have at least one step.")
 
@@ -111,9 +143,11 @@ class Pipeline(Estimator):
         return getattr(self.steps[-1][1], 'y', None)    
 
     def __call__(self, x: jnp.ndarray, **kwargs) -> jnp.ndarray:
-        """Single-sample forward pass."""
+        """Single-sample forward pass with argument filtering."""
         for name, layer in self.steps:
-            x = layer(x, **kwargs)
+            # We filter the kwargs based on the signature of the layer (layer.__call__)
+            step_kwargs = _filter_kwargs(layer, kwargs)
+            x = layer(x, **step_kwargs)
         return x
     
     if TYPE_CHECKING:

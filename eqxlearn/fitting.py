@@ -5,11 +5,13 @@ import equinox as eqx
 import inspect
 import optax
 from tqdm.auto import tqdm
-from eqxlearn.metrics import mean_squared_error
 from dataclasses import replace
 
+from eqxlearn.metrics import mean_squared_error
+from eqxlearn.base import BaseModel
+
 def fit(
-    model: eqx.Module,
+    model: BaseModel,
     X: Optional[jnp.ndarray] = None,
     y: Optional[jnp.ndarray] = None,
     *,

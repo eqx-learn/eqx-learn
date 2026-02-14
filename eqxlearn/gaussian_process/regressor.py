@@ -41,7 +41,7 @@ class GaussianProcessRegressor(Regressor):
         if y is not None and X is not None:
             N, _D = X.shape
             if len(y.shape) != 1 or y.shape[0] != N:
-                raise ValueError("Incompatible shapes for X and y passed")
+                raise ValueError(f"Incompatible shapes for X and y passed. x: {X.shape}, y: {y.shape}. If you would like to train a GP with multiple outputs, use MultiOutputRegressor.")
 
     def condition(self, X: jnp.ndarray, y: jnp.ndarray) -> Self:
         """

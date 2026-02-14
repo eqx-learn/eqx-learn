@@ -1,4 +1,4 @@
-from typing import Self, Optional
+from typing import Self, Optional, Union
 from dataclasses import replace
 
 import equinox as eqx
@@ -7,55 +7,66 @@ import jax.numpy as jnp
 from eqxlearn.base import Regressor
 
 class LinearRegressor(Regressor):
+    """
+    Ordinary Least Squares (OLS) Linear Regression.
+    
+    State:
+        weight: (D,) array of coefficients.
+        bias: Scalar bias/intercept.
+    """
     weight: Optional[jnp.ndarray] = None
     bias: Optional[jnp.ndarray] = None
 
-    def __init__(self, in_features: Optional[int] = None, key = None):
-        """
-        Args:
-            in_features: Number of input features. If None, model is uninitialized
-                         until solve() is called or trained iteratively.
-            key: PRNGKey for random initialization.
-        """
-        # Initialize small random weights to break symmetry if trained iteratively
-        if in_features is not None:
-            if key is None: key = jax.random.PRNGKey(0)
-            self.weight = jax.random.normal(key, (in_features,)) * 0.01
-            # Bias scalar (or matching shape if multi-output, but usually scalar for standard LinReg)
-            self.bias = jnp.zeros(()) 
-        else:
-            self.weight = None
-            self.bias = None
+    def __init__(self, weight=None, bias=None):
+        self.weight = weight
+        self.bias = bias
     
-    def condition(self, X: jnp.ndarray, y: jnp.ndarray) -> Self:
+    def solve(self, X: jnp.ndarray, y: jnp.ndarray) -> Self:
         """
         Solves the Linear Regression problem analytically using Least Squares.
-        Mathematically equivalent to: w = (X^T X)^-1 X^T y
+        Mathematically equivalent to minimizing ||Ax - y||^2.
         
         Args:
-            X: Input data (N, D)
+            X: Input data (N, D) or (N,)
             y: Target data (N,)
         Returns:
-            New instance of LinearRegressor with optimal weights conditioned on the data.
+            New instance of LinearRegressor with optimal parameters.
         """
-        # 1. Prepare Design Matrix A = [X, 1]
-        N = X.shape[0]
+        # 1. Robust Shape Handling
+        # Ensure X is (N, D)
+        if X.ndim == 1:
+            X = X[:, None]
+            
+        # Ensure y is (N,)
+        if y.ndim > 1:
+            y = y.ravel()
+
+        N, D = X.shape
+
+        # 2. Prepare Design Matrix A = [X, 1]
+        # We append a column of ones to handle the bias term
         ones = jnp.ones((N, 1))
         A = jnp.concatenate([X, ones], axis=1)
         
-        # 2. Solve Ax = y
-        # lstsq returns (solution, residuals, rank, singular_values)
-        theta, _, _, _ = jnp.linalg.lstsq(A, y)
+        # 3. Solve Ax = y
+        # rcond=None allows JAX to use machine precision defaults for singular values
+        theta, residuals, rank, s = jnp.linalg.lstsq(A, y, rcond=None)
         
-        # 3. Extract Parameters
+        # 4. Extract Parameters
+        # theta is shape (D+1,). Last element is the bias.
         new_weight = theta[:-1]
         new_bias = theta[-1]
         
-        # 4. Return new model (Immutable update)
+        # 5. Return new model (Immutable update)
         return replace(self, weight=new_weight, bias=new_bias)
     
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        return jnp.dot(self.weight, x) + self.bias
-    
-    def predict(self, X: jnp.ndarray):
-        return jax.vmap(self)(X)    
+        """
+        Forward pass for a SINGLE sample x.
+        x: (D,) array
+        """
+        if self.weight is None or self.bias is None:
+            raise RuntimeError("LinearRegressor is not initialized. Call solve() first.")
+            
+        # Linear equation: y = w.x + b
+        return jnp.dot(x, self.weight) + self.bias

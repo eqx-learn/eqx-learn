@@ -99,8 +99,8 @@ class RBFKernel(Kernel):
 class WhiteNoiseKernel(Kernel):
     log_variance: jnp.ndarray
 
-    def __init__(self, variance=1.0):
-        self.log_variance = jnp.log(jnp.array(variance))
+    def __init__(self, noise_level=1.0):
+        self.log_variance = jnp.log(jnp.array(noise_level))
 
     def __call__(self, x1, x2):
         is_equal = jnp.allclose(x1, x2)
