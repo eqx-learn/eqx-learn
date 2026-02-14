@@ -71,3 +71,10 @@ class InvertibleTransformer(Transformer):
         Subclasses must implement this.
         """
         raise NotImplementedError
+    
+    def inverse_transform(self, X: jnp.ndarray, **kwargs) -> jnp.ndarray:
+        """
+        Batched transformation.
+        Automatically vectorizes the single-sample inverse().
+        """
+        return jax.vmap(lambda x: self.inverse(x, **kwargs))(X)    

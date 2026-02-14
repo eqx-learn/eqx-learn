@@ -1,3 +1,5 @@
+![eqx-learn logo](assets/logo.png)
+
 # eqx-learn
 
 A minimal, classical machine learning library built on [JAX](https://github.com/google/jax) and [Equinox](https://github.com/patrick-kidger/equinox).

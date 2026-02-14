@@ -58,7 +58,6 @@ class PCA(InvertibleTransformer):
         """
         Fits the PCA model to X.
         """
-        # 1. Shape Handling
         input_shape = X.shape[1:]
         n_samples = X.shape[0]
         
@@ -66,60 +65,41 @@ class PCA(InvertibleTransformer):
         X_flat = X.reshape(n_samples, -1)
         n_features = X_flat.shape[1]
         
-        # 2. Centering
+        # Centering
         mean = jnp.mean(X_flat, axis=0)
         Xc = X_flat - mean
 
-        # 3. SVD
-        # full_matrices=False -> Vt is (K, D) where K = min(N, D)
-        # We perform the full SVD once.
+        # SVD
         _U, _S, Vt = jnp.linalg.svd(Xc, full_matrices=False)
-        
-        # Theoretical maximum rank
         full_rank = min(n_samples, n_features)
         
-        # 4. Component Selection Logic
         final_k = full_rank # Default to full rank if nothing specified
 
         if self.n_components is not None:
-            # --- Mode 1: Fixed Number of Components ---
-            # Clamp request to the actual data rank
             final_k = min(self.n_components, full_rank)
-            
         elif self.error_threshold is not None:
-            # --- Mode 2: Iterative Error Threshold ---
-            # Determine loop limit
             loop_limit = full_rank
             if self.max_components is not None:
                 loop_limit = min(self.max_components, full_rank)
 
-            # Iteratively add components until error is low enough
-            # We start at 1 component.
+            # Start from min_components!
+            # Default if loop doesn't break
+            final_k = loop_limit 
+            
             for k in range(1, loop_limit + 1):
                 V_k = Vt[:k, :]
+                coeff = Xc @ V_k.conj().T
+                X_rec = coeff @ V_k
                 
-                # Reconstruct: X -> Score -> X_rec
-                # (N, D) @ (D, k) -> (N, k)
-                scores = jnp.dot(Xc, V_k.T)
-                # (N, k) @ (k, D) -> (N, D)
-                X_rec = jnp.dot(scores, V_k) + mean
-                
-                # Calculate Max Absolute Error
-                current_error = jnp.max(jnp.abs(X_flat - X_rec))
-                
+                current_error = jnp.max(jnp.abs(Xc - X_rec))
                 if current_error < self.error_threshold:
                     final_k = k
                     break
-            else:
-                # If loop finishes without breaking, we hit the limit
-                final_k = loop_limit
 
-        # 5. Extract Final Components
-        # Vt is shape (K, D), we slice the top k rows
         components = Vt[:final_k, :]
-
-        # 6. Return New Fitted Instance
-        return replace(self, components=components, mean=mean, input_shape=input_shape, n_components=components.shape[0])
+        
+        # Update n_components to reflect what was actually chosen
+        return replace(self, components=components, mean=mean, input_shape=input_shape, n_components=final_k)
 
     def __call__(self, x: jnp.ndarray, **kwargs) -> jnp.ndarray:
         """
@@ -129,13 +109,12 @@ class PCA(InvertibleTransformer):
         Returns:
             Projected scores of shape (n_components,).
         """
-        if self.components is None or self.mean is None:
-            raise RuntimeError("PCA is not fitted. Call solve() first.")
-
+        if self.components is None: raise RuntimeError("PCA not fitted")
+        
         x_flat = x.ravel()
         centered = x_flat - self.mean
-        return self.components @ centered
-
+        return centered @ self.components.T.conj()
+    
     def inverse(self, x: jnp.ndarray, **kwargs) -> jnp.ndarray:
         """
         Inverse pass: Reconstruct data from principal components.
@@ -144,9 +123,7 @@ class PCA(InvertibleTransformer):
         Returns:
             Reconstructed data of shape `input_shape`.
         """
-        if self.components is None or self.mean is None:
-            raise RuntimeError("PCA is not fitted. Call solve() first.")
+        if self.components is None: raise RuntimeError("PCA not fitted")
 
-        # x @ components -> (K,) @ (K, D) -> (D,)
         x_rec_flat = x @ self.components + self.mean
         return x_rec_flat.reshape(self.input_shape)
