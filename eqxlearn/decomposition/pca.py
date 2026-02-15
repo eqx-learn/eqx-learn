@@ -91,10 +91,10 @@ class PCA(InvertibleTransformer):
             # Start from min_components!
             for k in range(loop_start, loop_limit + 1):
                 V_k = Vt[:k, :]
-                coeff = Xc @ V_k.conj().T
+                coeff = Xc @ V_k.T.conj()
                 X_rec = coeff @ V_k
                 
-                current_error = jnp.max(jnp.abs(Xc - X_rec))
+                current_error = jnp.mean(jnp.abs(Xc - X_rec))
                 if current_error < self.error_threshold:
                     break
             final_k = k
@@ -107,7 +107,6 @@ class PCA(InvertibleTransformer):
     def __call__(self, x: Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]], **kwargs) -> Any:
         """
         Forward: Data Space -> Latent Space
-        Propagates variance: Var(z) = Var(x) @ (Components.T)^2
         """
         if self.components is None or self.mean is None:
             raise RuntimeError("PCA is not fitted. Call solve() first.")
@@ -118,19 +117,31 @@ class PCA(InvertibleTransformer):
             x, var_in = x
         
         # 2. Transform Mean
+        # Standard projection: dot product with conjugate transpose
         x_flat = x.ravel()
         centered = x_flat - self.mean
-        mean_out = self.components @ centered
+        mean_out = centered @ self.components.T.conj()
 
         # 3. Transform Variance
         if var_in is not None:
             var_flat = var_in.ravel()
-            # Squared weights for variance propagation
-            # Components shape: (K, D)
-            # We want: (K, D) @ (D,) -> (K,)
-            V_sq = jnp.abs(self.components)**2
-            var_out = V_sq @ var_flat
-            return mean_out, var_out
+            if jnp.isrealobj(var_flat):
+                # Real variance, so we assume Var(Re) == Var(Im)
+                V_sq = jnp.abs(self.components)**2
+                var_out = V_sq @ var_flat
+                return mean_out, var_out
+            else:
+                # Complex variance, so we treat Re and Im as independent Gaussian Processes.
+                W_r_sq = self.components.real ** 2
+                W_i_sq = self.components.imag ** 2
+                var_x_r = var_flat.real
+                var_x_i = var_flat.imag
+
+                var_z_r = W_r_sq @ var_x_r + W_i_sq @ var_x_i
+                var_z_i = W_r_sq @ var_x_i + W_i_sq @ var_x_r
+
+                var_out = var_z_r + 1j * var_z_i
+                return mean_out, var_out
 
         return mean_out
 
@@ -154,14 +165,23 @@ class PCA(InvertibleTransformer):
 
         # 3. Transform Variance
         if var_in is not None:
-            # Squared weights
-            # We use transpose here because we are mapping backwards
-            # var_in: (K,)
-            # V_sq: (K, D)
-            # Result: (K,) @ (K, D) -> (D,)
-            V_sq = jnp.abs(self.components)**2
-            var_flat = var_in @ V_sq
-            var_out = var_flat.reshape(self.input_shape)
+            if jnp.isrealobj(var_in):
+                # If variance is real-valued, we interpret it as circular noise
+                V_sq = jnp.abs(self.components)**2
+                var_flat = var_in @ V_sq
+                var_out = var_flat.reshape(self.input_shape)
+            else:
+                # If variance is complex-valued, we interpret it as two independent variances
+                W_r_sq = self.components.real ** 2
+                W_i_sq = self.components.imag ** 2
+                var_z_r = var_in.real
+                var_z_i = var_in.imag
+
+                var_out_r = var_z_r @ W_r_sq + var_z_i @ W_i_sq
+                var_out_i = var_z_r @ W_i_sq + var_z_i @ W_r_sq
+                var_flat = var_out_r + 1j * var_out_i
+
+                var_out = var_flat.reshape(self.input_shape)
             return mean_out, var_out
 
-        return mean_out
+        return mean_out        
