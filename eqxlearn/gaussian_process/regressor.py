@@ -83,21 +83,31 @@ class GaussianProcessRegressor(Regressor):
         return mu, jnp.maximum(var, 1e-12)
     
     def loss(self):
-        """Computes Negative Log Marginal Likelihood (NLML)."""
+        """
+        Computes the Mean Negative Log Marginal Likelihood (MNLML).
+        
+        This metric is normalized by the number of samples (N), making it 
+        invariant to training set size.
+        """
         X, y = self.X, self.y
         N = X.shape[0]
         
+        # 1. Compute Kernel Matrix
         k_fn = lambda x1, x2: self.kernel(x1, x2)
         K = jax.vmap(lambda x1: jax.vmap(lambda x2: k_fn(x1, x2))(X))(X)
         
+        # 2. Add Jitter & Cholesky Decomposition
         K_y = K + self.jitter * jnp.eye(N)
         L = jnp.linalg.cholesky(K_y)
         
+        # 3. Solve linear system (calculate alpha)
         z = jax.scipy.linalg.solve_triangular(L, y, lower=True)
         alpha = jax.scipy.linalg.solve_triangular(L.T, z, lower=False)
         
+        # 4. Compute Loss Components
         data_fit = 0.5 * jnp.dot(y, alpha)
         complexity = jnp.sum(jnp.log(jnp.diag(L)))
         constant = 0.5 * N * jnp.log(2 * jnp.pi)
         
-        return data_fit + complexity + constant
+        # 5. Normalize by N for size invariance
+        return (data_fit + complexity + constant) / N

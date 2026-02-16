@@ -5,6 +5,8 @@ from dataclasses import replace
 
 from eqxlearn.base import InvertibleTransformer
 
+EPSILON = 1E-8
+
 class StandardScaler(InvertibleTransformer):
     """
     Standardize features by removing the mean and scaling to unit variance.
@@ -12,10 +14,13 @@ class StandardScaler(InvertibleTransformer):
     # Learned State
     mean: Optional[jnp.ndarray] = None
     scale: Optional[jnp.ndarray] = None
+    
+    eps: float = eqx.field(static=True)
 
-    def __init__(self, mean=None, scale=None):
+    def __init__(self, mean=None, scale=None, eps: float = 1e-8):
         self.mean = mean
         self.scale = scale
+        self.eps = eps
 
     def solve(self, X: jnp.ndarray, y: jnp.ndarray = None) -> Self:
         """
@@ -24,7 +29,7 @@ class StandardScaler(InvertibleTransformer):
         # Calculate stats over batch dim (0)
         mu = jnp.mean(X, axis=0)
         # Simple epsilon for stability
-        sigma = jnp.std(X, axis=0) + 1e-6
+        sigma = jnp.std(X, axis=0) + self.eps
 
         return replace(self, mean=mu, scale=sigma)
 

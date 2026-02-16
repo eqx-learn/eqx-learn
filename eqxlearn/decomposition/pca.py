@@ -25,6 +25,9 @@ class PCA(InvertibleTransformer):
     error_threshold: Optional[float] = eqx.field(static=True, default=None)
     min_components: Optional[int] = eqx.field(static=True, default=None)
     max_components: Optional[int] = eqx.field(static=True, default=None)
+    
+    # Outputs
+    noise_variance: Optional[jnp.ndarray] = None
 
     def __init__(
         self, 
@@ -36,6 +39,7 @@ class PCA(InvertibleTransformer):
         components: Optional[jnp.ndarray] = None,
         mean: Optional[jnp.ndarray] = None,
         input_shape: Optional[Tuple[int, ...]] = None,
+        noise_variance: Optional[Tuple[int, ...]] = None,
     ):
         """
         Args:
@@ -56,6 +60,8 @@ class PCA(InvertibleTransformer):
         self.components = components
         self.mean = mean
         self.input_shape = input_shape
+        
+        self.noise_variance = noise_variance
         
     def solve(self, X: jnp.ndarray, y: jnp.ndarray = None) -> Self:
         """
@@ -101,8 +107,15 @@ class PCA(InvertibleTransformer):
 
         components = Vt[:final_k, :]
         
+        # Calculate noise variance
+        coeff = Xc @ components.T.conj()
+        X_rec_flat = coeff @ components
+        residuals = Xc - X_rec_flat
+        noise_flat = jnp.mean(jnp.abs(residuals)**2, axis=0)
+        noise_variance = noise_flat.reshape(input_shape)
+        
         # Update n_components to reflect what was actually chosen
-        return replace(self, components=components, mean=mean, input_shape=input_shape, n_components=final_k)
+        return replace(self, components=components, mean=mean, input_shape=input_shape, n_components=final_k, noise_variance=noise_variance)
 
     def __call__(self, x: Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]], **kwargs) -> Any:
         """

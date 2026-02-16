@@ -3,7 +3,15 @@ import equinox as eqx
 
 @eqx.filter_jit
 def mean_squared_error(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> jnp.ndarray:
-    return jnp.mean((y_true - y_pred) ** 2)
+    return jnp.mean((jnp.abs(y_true - y_pred)) ** 2)
+
+@eqx.filter_jit
+def root_mean_squared_error(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> jnp.ndarray:
+    return jnp.sqrt(jnp.mean((jnp.abs(y_true - y_pred)) ** 2))
+
+@eqx.filter_jit
+def mean_absolute_error(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> jnp.ndarray:
+    return jnp.mean((jnp.abs(y_true - y_pred)))
 
 @eqx.filter_jit
 def r2_score(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> jnp.ndarray:
