@@ -1,199 +1,161 @@
-import inspect
-import jax
 import jax.numpy as jnp
-from typing import List, Tuple, Union, Any, Optional, Self, TYPE_CHECKING
+from typing import List, Tuple, Union, Optional
 from dataclasses import replace
-from eqxlearn.base import BaseModel, Transformer, Estimator, InvertibleTransformer
-
-# --- Helpers ---
-
-def _filter_kwargs(func: Any, kwargs: dict) -> dict:
-    try:
-        sig = inspect.signature(func)
-    except ValueError:
-        return kwargs
-    params = sig.parameters.values()
-    for param in params:
-        if param.kind == inspect.Parameter.VAR_KEYWORD: return kwargs
-    valid_keys = set(p.name for p in params)
-    return {k: v for k, v in kwargs.items() if k in valid_keys}
-
-# --- Mixins ---
-
-class _SolveMixin:
-    def solve(self, X: jnp.ndarray, y: Optional[jnp.ndarray] = None) -> Self:
-        X_curr = X
-        new_steps = []
-        
-        # Iterate over all steps EXCEPT the last one
-        for name, step in self.steps[:-1]:
-            if hasattr(step, "solve"): 
-                step = step.solve(X_curr, y)
-            new_steps.append((name, step))
-            # Transform data for the next step
-            X_curr = step.transform(X_curr)
-            
-        # Handle the last step separately
-        last_name, last_step = self.steps[-1]
-        
-        # FIX: Only call solve on the last step if it actually supports it.
-        # This allows [PCA, FunctionTransformer] to work.
-        if hasattr(last_step, "solve"):
-            last_step = last_step.solve(X_curr, y)
-            
-        new_steps.append((last_name, last_step))
-        return replace(self, steps=new_steps)
-
-class _ConditionMixin:
-    def condition(self, X: jnp.ndarray, y: Optional[jnp.ndarray] = None) -> Self:
-        X_curr = X
-        new_steps = []
-        for name, step in self.steps[:-1]:
-            if hasattr(step, "solve"): step = step.solve(X_curr, y)
-            elif hasattr(step, "condition"): step = step.condition(X_curr, y)
-            new_steps.append((name, step))
-            X_curr = step.transform(X_curr)
-            
-        last_name, last_step = self.steps[-1]
-        if hasattr(last_step, "condition"):
-            last_step = last_step.condition(X_curr, y)
-        elif hasattr(last_step, "X") and hasattr(last_step, "y"):
-            last_step = replace(last_step, X=X_curr, y=y)
-        new_steps.append((last_name, last_step))
-        return replace(self, steps=new_steps)
-
-class _LossMixin:
-    def loss(self, **kwargs):
-        step = self.steps[-1][1]
-        filtered_kwargs = _filter_kwargs(step.loss, kwargs)
-        return step.loss(**filtered_kwargs)
-
-# --- Class ---
+from eqxlearn.base import BaseModel
 
 class Pipeline(BaseModel):
     """
-    Sequentially applies a list of transforms and a final step.
+    Sequentially applies a list of transforms and a final estimator.
+    
+    Architecture:
+    - Transparent Delegation: Unknown attributes (like 'loss', 'X', 'y') are 
+      delegated to the final step. This allows fit() to inspect the underlying model.
+    - Strategy Propagation: The pipeline adopts the training strategy of its 
+      final step (e.g. 'analytical' vs 'loss-internal').
     """
     steps: List[Tuple[str, BaseModel]]
 
-    def __new__(cls, steps: List[Union[BaseModel, Tuple[str, BaseModel]]]):
-        if cls.__name__ != "Pipeline":
-            return super().__new__(cls)
-
-        # Unpack steps to check capabilities
-        # Handle both (name, model) tuples and raw model objects
-        models = [s if not isinstance(s, tuple) else s[1] for s in steps]
-        last = models[-1]
-        
-        # 1. Determine Identity (Estimator vs Transformer)
-        # Based ONLY on the last step
-        if isinstance(last, Transformer):
-            if isinstance(last, InvertibleTransformer) or hasattr(last, "inverse"):
-                base_identity = InvertibleTransformer
-            else:
-                base_identity = Transformer
-        else:
-            base_identity = Estimator
-
-        # 2. Mixins
-        mixins = []
-        
-        # FIX: Check if ANY step has 'solve', not just the last one.
-        if any(hasattr(m, 'solve') for m in models):
-            mixins.append(_SolveMixin)
-        
-        # Condition/Loss still mostly depend on the final estimator logic
-        # (Though technically one could have a conditioner in the middle, 
-        # usually only the final model holds the likelihood state).
-        needs_data = hasattr(last, 'condition') or (hasattr(last, 'loss') and not hasattr(last, 'solve'))
-        if needs_data: 
-            mixins.append(_ConditionMixin)
-            
-        if hasattr(last, 'loss'): 
-            mixins.append(_LossMixin)
-        
-        # 3. Create Dynamic Class
-        # MRO: Pipeline methods -> Mixins -> Pipeline (base) -> Invertible/Estimator
-        bases = tuple(mixins + [cls, base_identity])
-        
-        identity_name = base_identity.__name__
-        mixin_names = "".join([m.__name__.replace('_', '').replace('Mixin', '') for m in mixins])
-        cls_name = f"Pipeline{identity_name}{mixin_names}"
-        
-        DynamicPipeline = type(cls_name, bases, {})
-        return super().__new__(DynamicPipeline)
-
     def __init__(self, steps: List[Union[BaseModel, Tuple[str, BaseModel]]]):
-        if not steps: raise ValueError("Pipeline must have at least one step.")
+        """
+        Args:
+            steps: List of (name, model) tuples or just model instances.
+        """
         formatted_steps = []
         for i, step in enumerate(steps):
             if isinstance(step, tuple) and len(step) == 2:
-                name, module = step
+                formatted_steps.append(step)
             else:
-                name = f"{step.__class__.__name__.lower()}_{i}"
-                module = step
-            formatted_steps.append((name, module))
+                # Auto-generate names if not provided
+                formatted_steps.append((f"step_{i}", step))
         
+        # Validation: All but last must be transformers
         for name, step in formatted_steps[:-1]:
-            if not isinstance(step, Transformer):
-                raise TypeError(f"Intermediate step '{name}' is not a Transformer.")
+            if not hasattr(step, "transform"):
+                 raise TypeError(f"Intermediate step '{name}' must implement .transform()")
+                 
         self.steps = formatted_steps
+
+    # --- 1. Strategy Override (The "Truth Source") ---
+    
+    @property
+    def strategy(self) -> str:
+        """
+        Delegates the training strategy to the final estimator.
+        If the final estimator is 'loss-internal' (GP), the whole pipeline 
+        is treated as 'loss-internal'.
+        """
+        return self.steps[-1][1].strategy
+
+    # --- 2. Structural Updates (State Management) ---
+    
+    def condition(self, X: jnp.ndarray, y: Optional[jnp.ndarray] = None) -> 'Pipeline':
+        """
+        Passes data through transformers to condition the final Bayesian model (GP).
+        """
+        X_curr = X
         
-    # --- Indexing Logic Added Here ---
+        # 1. Transform X through the frozen/fitted transformers
+        for name, step in self.steps[:-1]:
+            # Note: Transformers typically aren't conditioned, but we check just in case
+            if hasattr(step, "condition"):
+                step = step.condition(X_curr, y)
+            X_curr = step.transform(X_curr)
+
+        # 2. Condition the final model
+        last_name, last_step = self.steps[-1]
+        
+        if hasattr(last_step, "condition"):
+            last_step = last_step.condition(X_curr, y)
+        elif hasattr(last_step, "X") and hasattr(last_step, "y"):
+             # Fallback: manually set X/y if the model has the fields but no condition method
+             last_step = replace(last_step, X=X_curr, y=y)
+             
+        # Reconstruct pipeline with updated last step
+        new_steps = self.steps[:-1] + [(last_name, last_step)]
+        return replace(self, steps=new_steps)    
+
+    def solve(self, X: jnp.ndarray, y: Optional[jnp.ndarray] = None) -> 'Pipeline':
+        """
+        Sequentially solves steps. 
+        Transformers are solved and then used to transform X for the next step.
+        """
+        X_curr = X
+        new_steps = []
+        
+        # 1. Solve and Transform all intermediate steps
+        for name, step in self.steps[:-1]:
+            # If the step can be solved (e.g. Scaler, PCA), solve it
+            if hasattr(step, "solve"):
+                step = step.solve(X_curr, y)
+            
+            new_steps.append((name, step))
+            
+            # Pass data forward
+            X_curr = step.transform(X_curr)
+
+        # 2. Solve the final estimator (e.g. LinearRegression)
+        last_name, last_step = self.steps[-1]
+        if hasattr(last_step, "solve"):
+            last_step = last_step.solve(X_curr, y)
+        
+        new_steps.append((last_name, last_step))
+        
+        return replace(self, steps=new_steps)
+
+    # --- 3. Transparent Delegation (The "Magic") ---
+    
+    def __getattr__(self, name):
+        """
+        Delegates unknown attributes to the final step.
+        This enables:
+          - hasattr(pipeline, 'loss') -> True (if GP has loss)
+          - inspect.signature(pipeline.loss) -> Works correctly
+          - pipeline.X -> returns the GP's X
+        """
+        # Safety: Don't delegate special methods (prevents infinite recursion on pickling)
+        if name.startswith("__"):
+            raise AttributeError(name)
+        
+        # We delegate to the underlying model instance (the second item in the tuple)
+        return getattr(self.steps[-1][1], name)
+
+    # --- 4. Standard Inference Methods ---
+
+    def __call__(self, x: jnp.ndarray, **kwargs) -> jnp.ndarray:
+        """
+        Single sample inference. Passes x through all steps.
+        """
+        for name, layer in self.steps:
+            # Simple pass-through.
+            # If you need specific kwargs filtering per layer, add it here.
+            x = layer(x, **kwargs)
+        return x
+
+    def inverse(self, x: jnp.ndarray, **kwargs) -> jnp.ndarray:
+        """
+        Inverts the pipeline in reverse order.
+        """
+        for name, layer in reversed(self.steps):
+            if hasattr(layer, "inverse"):
+                x = layer.inverse(x, **kwargs)
+            else:
+                 raise NotImplementedError(f"Step '{name}' does not implement .inverse()")
+        return x
+    
+    # --- Indexing Support ---
     def __getitem__(self, key: Union[str, int, slice]):
-        """
-        Access steps by name, index, or slice.
-        - pipe['name']: returns the step object.
-        - pipe[0]: returns the step object at index 0.
-        - pipe[0:2]: returns a NEW Pipeline instance with steps 0 and 1.
-        """
         if isinstance(key, slice):
-            # Return a new Pipeline instance (re-evaluating mixins)
             return Pipeline(self.steps[key])
         elif isinstance(key, int):
-            # Return the model object directly
             return self.steps[key][1]
         elif isinstance(key, str):
-            # Return the model object matching the name
             for name, step in self.steps:
                 if name == key:
                     return step
             raise KeyError(f"Key '{key}' not found in Pipeline.")
         else:
-            raise TypeError(f"Invalid index type: {type(key)}")        
+            raise TypeError(f"Invalid index type: {type(key)}")
 
     @property
-    def named_steps(self): return dict(self.steps)
-    
-    @property
-    def iterative_fitting(self):
-        final_step = self.steps[-1][1]
-        return getattr(final_step, 'iterative_fitting', hasattr(final_step, 'loss'))
-
-    @property
-    def X(self): return getattr(self.steps[-1][1], 'X', None)
-    @property
-    def y(self): return getattr(self.steps[-1][1], 'y', None)    
-
-    def __call__(self, x: jnp.ndarray, **kwargs) -> jnp.ndarray:
-        for name, layer in self.steps:
-            step_kwargs = _filter_kwargs(layer, kwargs)
-            x = layer(x, **step_kwargs)
-        return x
-
-    def inverse(self, x: jnp.ndarray, **kwargs) -> jnp.ndarray:
-        for name, layer in reversed(self.steps):
-            if hasattr(layer, "inverse"):
-                step_kwargs = _filter_kwargs(layer.inverse, kwargs)
-                x = layer.inverse(x, **step_kwargs)
-            elif hasattr(layer, "inverse_transform"):
-                 raise NotImplementedError(f"Step {name} does not implement single-sample .inverse()")
-        return x
-
-    if TYPE_CHECKING:
-        def solve(self, X: jnp.ndarray, y: Optional[jnp.ndarray] = None) -> Self: ...
-        def condition(self, X: jnp.ndarray, y: Optional[jnp.ndarray] = None) -> Self: ...
-        def loss(self, **kwargs) -> jnp.ndarray: ...
-        def predict(self, X: jnp.ndarray, **kwargs) -> jnp.ndarray: ...
-        def transform(self, X: jnp.ndarray, **kwargs) -> jnp.ndarray: ...
-        def inverse_transform(self, X: jnp.ndarray, **kwargs) -> jnp.ndarray: ...
+    def named_steps(self):
+        return dict(self.steps)

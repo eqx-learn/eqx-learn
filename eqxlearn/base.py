@@ -11,6 +11,22 @@ class BaseModel(eqx.Module, ABC):
     Root class for all eqxlearn objects.
     Enforces JAX-compatible forward pass structure.
     """
+    @property
+    def strategy(self) -> str:
+        """
+        Determines the default training strategy for this model.
+        Returns:
+            - 'analytical': Has .solve(), needs no loop.
+            - 'internal-loss': Has .loss(), needs optimization loop.
+            - 'external-loss': Has neither, needs loop + external loss fn.
+        """
+        if hasattr(self, 'solve'):
+            return 'analytical'
+        elif hasattr(self, 'loss'):
+            return 'internal-loss'
+        else:
+            return 'external-loss'    
+    
     @abstractmethod
     def __call__(self, x: jnp.ndarray, **kwargs) -> jnp.ndarray:
         """
