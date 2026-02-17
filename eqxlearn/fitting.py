@@ -27,29 +27,29 @@ def fit(
     # Input validation
     if optimizer is not None and learning_rate is not None:
         raise ValueError("Cannot pass 'optimizer' and 'learning_rate' to 'fit'")    
-    
+       
     # Defaults
     if learning_rate is not None:
         optimizer = optax.adam(learning_rate=learning_rate)
-    elif optimizer is None:
+    if optimizer is None and strategy != 'analytical' and (strategy != 'default' and model.strategy != 'analytical'):
         optimizer = optax.adam(learning_rate=0.1) # Default for iterative methods
-        if current_strategy == 'default' and model.strategy != 'analytical':
-            current_strategy = model.strategy
     if loss_fn is None:
         loss_fn = mean_squared_error        
     
     # Condition and solve on the data, if the model supports its.
     if X is not None:
-        # Condition the model. Used by Bayesian models (GPs) to update belief state/store data.
         if hasattr(model, 'condition'):
             model = model.condition(X, y)
-
-        # Solve the model. Used by Analytical models (LinearReg, Scalers) to compute exact solutions.
-        # Note: A model could theoretically do both, e.g. Bayesian LinReg computing MAP.
         if hasattr(model, 'solve'):
             model = model.solve(X, y)
             
     # Determine if we should run an optimization loop
+    has_internal_loss = hasattr(model, 'loss')
+    if strategy == 'default' and optimizer is not None:
+        if has_internal_loss:
+            strategy = 'internal-loss'
+        else:
+            strategy = 'external-loss'
     current_strategy = strategy if strategy != 'default' else model.strategy
     if current_strategy == 'analytical':
         return model, []    
@@ -70,7 +70,6 @@ def fit(
     model_call_sig = inspect.signature(model.__call__)
     call_needs_key = 'key' in model_call_sig.parameters
     
-    has_internal_loss = hasattr(model, 'loss')
     loss_needs_key = False
     if has_internal_loss:
         loss_needs_key = 'key' in inspect.signature(model.loss).parameters
