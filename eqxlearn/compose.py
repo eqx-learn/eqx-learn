@@ -19,8 +19,6 @@ class TransformedTargetRegressor(Regressor):
         self.regressor = regressor
         self.transformer = transformer
 
-    # --- 1. Strategy Override ---
-    
     @property
     def strategy(self) -> str:
         """
@@ -29,53 +27,44 @@ class TransformedTargetRegressor(Regressor):
         """
         return self.regressor.strategy
 
-    # --- 2. Structural Updates (State Management) ---
+    def condition(self, X: jnp.ndarray, y: jnp.ndarray) -> "TransformedTargetRegressor":
+        """
+        Conditions the transformer on data. 
+        
+        This conditions and solved the transformer, and conditions the regressor.
+        """
+        # 1. Fit Transformer (Must fit to transform y correctly)
+        fitted_trans = self.transformer
+        if hasattr(fitted_trans, 'condition'):
+            fitted_trans = fitted_trans.condition(y)
+        if hasattr(fitted_trans, 'solve'):
+            fitted_trans = fitted_trans.solve(y)
+            
+        # 2. Transform Target
+        y_trans = fitted_trans.transform(y)
+        
+        # 3. Condition Regressor
+        fitted_reg = self.regressor
+        if hasattr(self.regressor, 'condition'):
+            fitted_reg = self.regressor.condition(X, y_trans)
+        elif hasattr(self.regressor, 'X'):
+            fitted_reg = replace(self.regressor, X=X, y=y_trans)
+            
+        return replace(self, regressor=fitted_reg, transformer=fitted_trans)
 
     def solve(self, X: jnp.ndarray, y: jnp.ndarray) -> "TransformedTargetRegressor":
         """
         Solves the transformer (on y) and then the regressor (on X, y_trans).
         """
-        # 1. Fit the transformer on the target y
-        fitted_trans = self.transformer
-        if hasattr(self.transformer, 'solve'):
-            fitted_trans = self.transformer.solve(y) # Transformers usually take X, but here y IS the data
-            
-        # 2. Transform the target
-        y_trans = fitted_trans.transform(y)
+        if not hasattr(self.regressor, 'solve'):
+            return self
         
-        # 3. Fit the regressor on the transformed target
-        fitted_reg = self.regressor
-        if hasattr(self.regressor, 'solve'):
-            fitted_reg = self.regressor.solve(X, y_trans)
-            
-        return replace(self, regressor=fitted_reg, transformer=fitted_trans)
-
-    def condition(self, X: jnp.ndarray, y: jnp.ndarray) -> "TransformedTargetRegressor":
-        """
-        Conditions the pipeline on data. 
-        Crucial for Bayesian models (GPs) where we store the data.
-        """
-        # 1. Update Transformer State
-        fitted_trans = self.transformer
-        if hasattr(self.transformer, 'solve'):
-            fitted_trans = self.transformer.solve(y)
-        elif hasattr(self.transformer, 'condition'):
-            fitted_trans = self.transformer.condition(y)
-            
-        # 2. Transform Target
-        y_trans = fitted_trans.transform(y)
+        # Transform the target
+        y_trans = self.transformer.transform(y)
         
-        # 3. Update Regressor State
-        fitted_reg = self.regressor
-        if hasattr(self.regressor, 'condition'):
-            fitted_reg = self.regressor.condition(X, y_trans)
-        elif hasattr(self.regressor, 'X'):
-            # Fallback for models that store data but don't have a specific condition method
-            fitted_reg = replace(self.regressor, X=X, y=y_trans)
-            
-        return replace(self, regressor=fitted_reg, transformer=fitted_trans)
-
-    # --- 3. Transparent Delegation ---
+        # Solve the for the regressor on the transformed target
+        fitted_reg = self.regressor.solve(X, y_trans)
+        return replace(self, regressor=fitted_reg)
 
     def __getattr__(self, name):
         """

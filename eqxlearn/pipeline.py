@@ -1,9 +1,10 @@
+import jax
 import jax.numpy as jnp
 from typing import List, Tuple, Union, Optional
 from dataclasses import replace
-from eqxlearn.base import BaseModel
+from eqxlearn.base import BaseModel, Estimator, Transformer
 
-class Pipeline(BaseModel):
+class Pipeline(Estimator, Transformer):
     """
     Sequentially applies a list of transforms and a final estimator.
     
@@ -50,54 +51,40 @@ class Pipeline(BaseModel):
     
     def condition(self, X: jnp.ndarray, y: Optional[jnp.ndarray] = None) -> 'Pipeline':
         """
-        Passes data through transformers to condition the final Bayesian model (GP).
-        """
-        X_curr = X
-        
-        # 1. Transform X through the frozen/fitted transformers
-        for name, step in self.steps[:-1]:
-            # Note: Transformers typically aren't conditioned, but we check just in case
-            if hasattr(step, "condition"):
-                step = step.condition(X_curr, y)
-            X_curr = step.transform(X_curr)
-
-        # 2. Condition the final model
-        last_name, last_step = self.steps[-1]
-        
-        if hasattr(last_step, "condition"):
-            last_step = last_step.condition(X_curr, y)
-        elif hasattr(last_step, "X") and hasattr(last_step, "y"):
-             # Fallback: manually set X/y if the model has the fields but no condition method
-             last_step = replace(last_step, X=X_curr, y=y)
-             
-        # Reconstruct pipeline with updated last step
-        new_steps = self.steps[:-1] + [(last_name, last_step)]
-        return replace(self, steps=new_steps)    
-
-    def solve(self, X: jnp.ndarray, y: Optional[jnp.ndarray] = None) -> 'Pipeline':
-        """
-        Sequentially solves steps. 
-        Transformers are solved and then used to transform X for the next step.
+        Conditions and solves the intermediate steps in the pipeline,
+        and conditions the final step.
         """
         X_curr = X
         new_steps = []
-        
-        # 1. Solve and Transform all intermediate steps
         for name, step in self.steps[:-1]:
-            # If the step can be solved (e.g. Scaler, PCA), solve it
-            if hasattr(step, "solve"):
-                step = step.solve(X_curr, y)
-            
+            if hasattr(step, "condition"): step = step.condition(X_curr, y)
+            if hasattr(step, "solve"): step = step.solve(X_curr, y)
             new_steps.append((name, step))
+            X_curr = step.transform(X_curr)
             
-            # Pass data forward
+        last_name, last_step = self.steps[-1]
+        if hasattr(last_step, "condition"):
+            last_step = last_step.condition(X_curr, y)
+        new_steps.append((last_name, last_step))
+        return replace(self, steps=new_steps)
+
+    def solve(self, X: jnp.ndarray, y: Optional[jnp.ndarray] = None) -> 'Pipeline':
+        """
+        Solves the final step in the pipeline.
+        """
+        last_name, last_step = self.steps[-1]
+        if not hasattr(last_step, "solve"):
+            return self
+        
+        # Transform all intermediate steps
+        X_curr = X
+        new_steps = []
+        for name, step in self.steps[:-1]:
+            new_steps.append((name, step))
             X_curr = step.transform(X_curr)
 
-        # 2. Solve the final estimator (e.g. LinearRegression)
-        last_name, last_step = self.steps[-1]
-        if hasattr(last_step, "solve"):
-            last_step = last_step.solve(X_curr, y)
-        
+        # Solve the final estimator (e.g. LinearRegression)
+        last_step = last_step.solve(X_curr, y)
         new_steps.append((last_name, last_step))
         
         return replace(self, steps=new_steps)
@@ -142,6 +129,27 @@ class Pipeline(BaseModel):
                  raise NotImplementedError(f"Step '{name}' does not implement .inverse()")
         return x
     
+    def predict(self, X: jnp.ndarray, **kwargs) -> jnp.ndarray:
+        """
+        Predicts targets for a batch of samples `X`.
+        """
+        if not isinstance(self.steps[-1][1], Estimator):
+            raise Exception("Cannot call 'predict' on Pipeline since final step is not an estimator")
+        return super().predict(X, **kwargs)
+
+    def transform(self, X: jnp.ndarray, **kwargs) -> jnp.ndarray:
+        """
+        Transforms targets for a batch of samples `X`.
+        """
+        if isinstance(self.steps[-1][1], Transformer):
+            return super().transform(X, **kwargs)
+        
+        def transform_one(x):
+            for name, layer in self.steps[0:-1]:
+                x = layer(x, **kwargs)
+            return x
+        return jax.vmap(transform_one)(X)
+
     # --- Indexing Support ---
     def __getitem__(self, key: Union[str, int, slice]):
         if isinstance(key, slice):

@@ -31,7 +31,7 @@ def fit(
     # Defaults
     if learning_rate is not None:
         optimizer = optax.adam(learning_rate=learning_rate)
-    if optimizer is None and strategy != 'analytical' and (strategy != 'default' and model.strategy != 'analytical'):
+    if optimizer is None and (strategy != 'analytical' or (strategy == 'default' and model.strategy != 'analytical')):
         optimizer = optax.adam(learning_rate=0.1) # Default for iterative methods
     if loss_fn is None:
         loss_fn = mean_squared_error        

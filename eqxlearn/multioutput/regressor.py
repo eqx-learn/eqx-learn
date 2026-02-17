@@ -58,6 +58,23 @@ class MultiOutputRegressor(Regressor):
 
     # --- 2. Structural Updates (State Management) ---
 
+    def condition(self, X: jnp.ndarray, Y: jnp.ndarray) -> "MultiOutputRegressor":
+        """
+        Conditions the ensemble on data (e.g. for GPs).
+        """
+        model = self._ensure_init(Y)
+        M = model._output_dim
+        
+        X_stack = jnp.broadcast_to(X, (M,) + X.shape)
+        Y_stack = Y.T 
+        
+        def single_condition(m, x, y):
+            if hasattr(m, 'condition'):
+                return m.condition(x, y)
+
+        new_batched = jax.vmap(single_condition)(model.batched, X_stack, Y_stack)
+        return replace(model, batched=new_batched)    
+
     def solve(self, X: jnp.ndarray, Y: jnp.ndarray) -> "MultiOutputRegressor":
         """
         1. Initializes the batch (if needed) using Y's shape.
@@ -80,27 +97,6 @@ class MultiOutputRegressor(Regressor):
         
         # If inner model has no solve (e.g. MLP), we just return the initialized model
         return model
-
-    def condition(self, X: jnp.ndarray, Y: jnp.ndarray) -> "MultiOutputRegressor":
-        """
-        Conditions the ensemble on data (e.g. for GPs).
-        """
-        model = self._ensure_init(Y)
-        M = model._output_dim
-        
-        X_stack = jnp.broadcast_to(X, (M,) + X.shape)
-        Y_stack = Y.T 
-        
-        def single_condition(m, x, y):
-            if hasattr(m, 'condition'):
-                return m.condition(x, y)
-            elif hasattr(m, 'X'):
-                # Fallback: Data Injection
-                return replace(m, X=x, y=y)
-            return m
-
-        new_batched = jax.vmap(single_condition)(model.batched, X_stack, Y_stack)
-        return replace(model, batched=new_batched)
 
     # --- 3. Loss Calculation (For 'loss-internal') ---
 
