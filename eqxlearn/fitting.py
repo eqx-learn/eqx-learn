@@ -20,7 +20,7 @@ def fit(
     strategy: str = 'default',
     loss_fn: Optional[Union[Callable, eqx.Module]] = None,
     key: Optional[jax.random.PRNGKey] = None,
-    max_iter: int = 1000,
+    max_iter: int | None = None,
     patience: int = 10,
     tol: float = 1e-4,
     show_progress: bool = True,
@@ -91,8 +91,10 @@ def fit(
 
     return eqx.combine(params, static), losses
     
-def _fit_jaxopt(solver, params, X, y, loss_fn, *, max_iter=1000, tol=1e-4, show_progress=True, key=None):
-    solver_kwargs = {'maxiter': max_iter, 'tol': tol}
+def _fit_jaxopt(solver, params, X, y, loss_fn, *, max_iter=None, tol=1e-4, show_progress=True, key=None):
+    solver_kwargs = {'tol': tol}
+    if max_iter is not None:
+        solver_kwargs['maxiter'] = max_iter
     solver = solver(fun=loss_fn, **solver_kwargs)
     res = solver.run(params, X, y, key)
     final_params = res.params
