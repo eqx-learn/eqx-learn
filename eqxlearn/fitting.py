@@ -1,111 +1,116 @@
 from typing import Callable, Optional, Tuple, List, Union
+
 import jax
 import jax.numpy as jnp
 import equinox as eqx
-import inspect
 import optax
+import jaxopt
+from jaxopt.base import IterativeSolver
 from tqdm.auto import tqdm
-from dataclasses import replace
 
 from eqxlearn.metrics import mean_squared_error
 from eqxlearn.base import BaseModel
 
 def fit(
     model: BaseModel,
-    X: Optional[jnp.ndarray] = None,
+    X: jnp.ndarray,
     y: Optional[jnp.ndarray] = None,
     *,
-    strategy: str = 'default', 
-    learning_rate: float | None = None,
-    optimizer: Optional[optax.GradientTransformation] = None,
+    optimizer: Union[IterativeSolver, optax.GradientTransformation] = None,
+    strategy: str = 'default',
     loss_fn: Optional[Union[Callable, eqx.Module]] = None,
     key: Optional[jax.random.PRNGKey] = None,
     max_iter: int = 1000,
     patience: int = 10,
+    tol: float = 1e-4,
     show_progress: bool = True,
 ) -> Tuple[eqx.Module, List[float]]:
-    # Input validation
-    if optimizer is not None and learning_rate is not None:
-        raise ValueError("Cannot pass 'optimizer' and 'learning_rate' to 'fit'")    
-       
-    # Defaults
-    if learning_rate is not None:
-        optimizer = optax.adam(learning_rate=learning_rate)
-    if optimizer is None and (strategy != 'analytical' or (strategy == 'default' and model.strategy != 'analytical')):
-        optimizer = optax.adam(learning_rate=0.1) # Default for iterative methods
+    # Inspect model
+    has_condition = hasattr(model, 'condition')
+    has_solve = hasattr(model, 'solve')
+    has_loss = hasattr(model, 'loss')
+    
+    # Resolve defaults
+    if strategy == 'default':
+        strategy = model.strategy
+        if optimizer is not None and strategy == 'analytical':
+            strategy = 'internal-loss' if has_loss else 'external-loss'
     if loss_fn is None:
-        loss_fn = mean_squared_error        
-    
-    # Condition and solve on the data, if the model supports its.
+        loss_fn = mean_squared_error
+    if optimizer is None:
+        optimizer = jaxopt.LBFGS        
+
+    # Condition and solve the model
     if X is not None:
-        if hasattr(model, 'condition'):
+        if has_condition:
             model = model.condition(X, y)
-        if hasattr(model, 'solve'):
+        if has_solve:
             model = model.solve(X, y)
-            
-    # Determine if we should run an optimization loop
-    has_internal_loss = hasattr(model, 'loss')
-    if strategy == 'default' and optimizer is not None:
-        if has_internal_loss:
-            strategy = 'internal-loss'
-        else:
-            strategy = 'external-loss'
-    current_strategy = strategy if strategy != 'default' else model.strategy
-    if current_strategy == 'analytical':
-        return model, []    
-    
-    # --- Partitioning (Freezing Data) ---
-    filter_spec = jax.tree.map(lambda x: eqx.is_inexact_array(x), model)
-    # Freeze X
+          
+    # Return the model if we don't need to iterate
+    if strategy == 'analytical':
+        return model, []
+        
+    # Create the base filter spec, which freezes any analytical models
+    def is_analytical_model(node):
+        return isinstance(node, BaseModel) and node.strategy == 'analytical'
+    def build_filter_spec(node):
+        if is_analytical_model(node):
+            return False
+        return eqx.is_inexact_array(node)
+    filter_spec = jax.tree.map(build_filter_spec, model, is_leaf=is_analytical_model)
+
+    # Explicitly freeze X and y (in case they exist inside a trainable model)
     if hasattr(model, 'X') and model.X is not None:
         filter_spec = eqx.tree_at(lambda m: m.X, filter_spec, replace=False)
-    # Freeze y
     if hasattr(model, 'y') and model.y is not None:
         filter_spec = eqx.tree_at(lambda m: m.y, filter_spec, replace=False)
-
-    params, static = eqx.partition(model, filter_spec)
-    opt_state = optimizer.init(params)
-    
-    # --- Introspection ---
-    model_call_sig = inspect.signature(model.__call__)
-    call_needs_key = 'key' in model_call_sig.parameters
-    
-    loss_needs_key = False
-    if has_internal_loss:
-        loss_needs_key = 'key' in inspect.signature(model.loss).parameters
-
-    def compute_loss(params, static, X_batch, y_batch, key):
-        model = eqx.combine(params, static)
         
-        # Scenario 1: Internal Loss (GP) - Data is inside
-        if has_internal_loss:
-            return model.loss(key=key) if loss_needs_key and key is not None else model.loss()
-            
-        # Scenario 2: External Loss (NN) - Need data
-        # Prioritize batch data, fallback to internal model data
-        if X_batch is not None:
-            X_in, y_true = X_batch, y_batch
-        elif hasattr(model, 'X') and hasattr(model, 'y') and model.X is not None:
-            X_in, y_true = model.X, model.y
-        else:
-            raise ValueError("Iterative training requested but no data available (neither passed nor internal).")
+    # Partition the model
+    params, static = eqx.partition(model, filter_spec)
 
-        if call_needs_key and key is not None:
-            pred = jax.vmap(model, in_axes=(0, None))(X_in, key)
+    # Define the loss function wrapper
+    def loss_wrapper_fn(params, X, y=None, key=None):
+        model = eqx.combine(params, static)
+        if has_loss:
+            loss_val = model.loss(key=key)
         else:
-            pred = jax.vmap(model)(X_in)
-        return loss_fn(pred, y_true)
+            y_pred = jax.vmap(model, in_axes=(0, None))(X, key)
+            loss_val = loss_fn(y_pred, y)
+
+        # if jnp.iscomplex(loss_val):
+        #     raise Exception("Loss cannot return a complex value")
+        return jnp.real(loss_val)
+    loss_wrapper_fn_jit = jax.jit(loss_wrapper_fn)
+
+    # Run the specific optimizer backend
+    if isinstance(optimizer, optax.GradientTransformation):
+        params, losses = _fit_optax(optimizer, params, X, y, loss_wrapper_fn_jit, max_iter=max_iter, patience=patience, show_progress=show_progress, key=key)
+    else:
+        params, losses = _fit_jaxopt(optimizer, params, X, y, loss_wrapper_fn_jit, max_iter=max_iter, tol=tol, show_progress=show_progress, key=key)
+
+    return eqx.combine(params, static), losses
+    
+def _fit_jaxopt(solver, params, X, y, loss_fn, *, max_iter=1000, tol=1e-4, show_progress=True, key=None):
+    solver_kwargs = {'maxiter': max_iter, 'tol': tol}
+    solver = solver(fun=loss_fn, **solver_kwargs)
+    res = solver.run(params, X, y, key)
+    final_params = res.params
+    final_loss = res.state.value 
+    return final_params, [final_loss]
+    
+def _fit_optax(optimizer, params, X, y, loss_fn, *, max_iter=1000, patience=10, show_progress=True, key=None):
+    opt_state = optimizer.init(params)
 
     @eqx.filter_jit
     def step(params, opt_state, X_batch, y_batch, key):
-        loss_val, grads = eqx.filter_value_and_grad(compute_loss)(
-            params, static, X_batch, y_batch, key
+        loss_val, grads = eqx.filter_value_and_grad(loss_fn)(
+            params, X_batch, y_batch, key
         )
         updates, opt_state = optimizer.update(grads, opt_state, params)
         params = eqx.apply_updates(params, updates)
         return params, opt_state, loss_val
 
-    # Loop
     loop = tqdm(range(max_iter), disable=not show_progress)
     losses = []
 
@@ -114,13 +119,12 @@ def fit(
         if key is not None:
             step_key, key = jax.random.split(key)
 
-        # We pass X and y (which might be None if injected) to step
-        # compute_loss logic handles finding the data
         params, opt_state, loss = step(params, opt_state, X, y, step_key)
         
         loss_val = loss.item()
         losses.append(loss_val)
 
+        # Early stopping
         min_idx = jnp.argmin(jnp.array(losses)).item()
         if len(losses) - min_idx - 1 > patience:
             loop.set_postfix_str(f"Early Stopping (Best: {losses[min_idx]:.4f})")
@@ -129,4 +133,4 @@ def fit(
         if i % 10 == 0:
             loop.set_postfix_str(f"Loss: {loss_val:.4f}")
 
-    return eqx.combine(params, static), losses
+    return params, losses    

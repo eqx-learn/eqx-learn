@@ -33,7 +33,7 @@ class StandardScaler(InvertibleTransformer):
 
         return replace(self, mean=mu, scale=sigma)
 
-    def __call__(self, x: Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]], **kwargs):
+    def __call__(self, x: Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]], key=None, **kwargs):
         """
         Forward transformation (Single Sample).
         x: (D,) Array OR ((D,), (D,)) Tuple
@@ -55,7 +55,7 @@ class StandardScaler(InvertibleTransformer):
         else:
             raise ValueError(f"Unknown input type: {type(x)}")
     
-    def inverse(self, x: Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]], **kwargs):
+    def inverse(self, x: Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]], key=None, **kwargs):
         """
         Inverse transformation (Single Sample).
         """
@@ -127,7 +127,7 @@ class MinMaxScaler(InvertibleTransformer):
         
         return replace(self, scale=scale_val, min=min_val)
 
-    def __call__(self, x: Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]], **kwargs):
+    def __call__(self, x: Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]], key=None, **kwargs):
         """
         Forward transformation (Single Sample).
         """
@@ -146,7 +146,7 @@ class MinMaxScaler(InvertibleTransformer):
         else:
             raise ValueError(f"MinMaxScaler received unknown input type: {type(x)}")
 
-    def inverse(self, x: Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]], **kwargs):
+    def inverse(self, x: Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]], key=None, **kwargs):
         """
         Inverse transformation (Single Sample).
         """

@@ -34,7 +34,7 @@ class FunctionTransformer(InvertibleTransformer):
         self.inverse_func = inverse_func
         self.kwargs = kwargs
 
-    def __call__(self, x: Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]], **kwargs) -> Any:
+    def __call__(self, x: Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]], key=None, **kwargs) -> Any:
         """
         Forward transformation (Single Sample).
         """
@@ -56,7 +56,7 @@ class FunctionTransformer(InvertibleTransformer):
             
         raise ValueError(f"FunctionTransformer received unknown input type: {type(x)}")
 
-    def inverse(self, x: Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]], **kwargs) -> Any:
+    def inverse(self, x: Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]], key=None, **kwargs) -> Any:
         """
         Inverse transformation (Single Sample).
         """

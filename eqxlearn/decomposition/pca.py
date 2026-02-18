@@ -117,7 +117,7 @@ class PCA(InvertibleTransformer):
         # Update n_components to reflect what was actually chosen
         return replace(self, components=components, mean=mean, input_shape=input_shape, n_components=final_k, noise_variance=noise_variance)
 
-    def __call__(self, x: Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]], **kwargs) -> Any:
+    def __call__(self, x: Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]], key=None, **kwargs) -> Any:
         """
         Forward: Data Space -> Latent Space
         """

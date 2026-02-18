@@ -21,7 +21,7 @@ class Kernel(eqx.Module):
         return ProductKernel(self, other)
 
     @abstractmethod
-    def __call__(self, x1, x2):
+    def __call__(self, x1, x2, key=None):
         pass
 
     def __repr__(self):
@@ -32,7 +32,7 @@ class SumKernel(Kernel):
     k1: Kernel
     k2: Kernel
 
-    def __call__(self, x1, x2):
+    def __call__(self, x1, x2, key=None):
         return self.k1(x1, x2) + self.k2(x1, x2)
 
     def __repr__(self):
@@ -42,7 +42,7 @@ class ProductKernel(Kernel):
     k1: Kernel
     k2: Kernel
 
-    def __call__(self, x1, x2):
+    def __call__(self, x1, x2, key=None):
         return self.k1(x1, x2) * self.k2(x1, x2)
 
     def __repr__(self):
@@ -60,7 +60,7 @@ class ConstantKernel(Kernel):
         # Ensure we work with arrays, even if scalar passed
         self.log_variance = jnp.log(jnp.array(variance))
 
-    def __call__(self, x1, x2):
+    def __call__(self, x1, x2, key=None):
         return jnp.exp(self.log_variance)
 
     def __repr__(self):
@@ -77,7 +77,7 @@ class RBFKernel(Kernel):
         """
         self.log_length_scale = jnp.log(jnp.array(length_scale))
 
-    def __call__(self, x1, x2):
+    def __call__(self, x1, x2, key=None):
         length_scale = jnp.exp(self.log_length_scale)
         
         # --- ARD UPDATE START ---
@@ -102,7 +102,7 @@ class WhiteNoiseKernel(Kernel):
     def __init__(self, noise_level=1.0):
         self.log_variance = jnp.log(jnp.array(noise_level))
 
-    def __call__(self, x1, x2):
+    def __call__(self, x1, x2, key=None):
         is_equal = jnp.allclose(x1, x2)
         # Use where to maintain differentiability flow
         return jnp.where(is_equal, jnp.exp(self.log_variance), 0.0)

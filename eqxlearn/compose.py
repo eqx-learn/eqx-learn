@@ -1,7 +1,10 @@
+import jax
+import jax.random as jr
 import jax.numpy as jnp
 from typing import Union, Tuple, Any
 from dataclasses import replace
 from eqxlearn.base import Regressor, Transformer
+
 
 class TransformedTargetRegressor(Regressor):
     """
@@ -81,7 +84,7 @@ class TransformedTargetRegressor(Regressor):
 
     # --- 4. Inference ---
 
-    def __call__(self, x: jnp.ndarray, **kwargs) -> Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]]:
+    def __call__(self, x: jnp.ndarray, key=None, **kwargs) -> Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]]:
         """
         Single-sample forward pass.
         1. Predict in transformed space.
@@ -90,8 +93,11 @@ class TransformedTargetRegressor(Regressor):
         # 1. Predict (y_trans)
         # We delegate to regressor call. 
         # Note: If regressor returns (mean, var), it's a tuple.
-        raw_pred = self.regressor(x, **kwargs)
+        if key is not None:
+            regressor_key, inverse_key = jr.split(key)
+
+        raw_pred = self.regressor(x, key=regressor_key, **kwargs)
         
         # 2. Inverse Transform
         # Transformer.inverse handles both Array and Tuple (mean, var) automatically.
-        return self.transformer.inverse(raw_pred)
+        return self.transformer.inverse(raw_pred, key=inverse_key)

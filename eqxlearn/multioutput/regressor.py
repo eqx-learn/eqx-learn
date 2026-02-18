@@ -1,7 +1,8 @@
 import jax
+import jax.random as jr
 import jax.numpy as jnp
 import equinox as eqx
-from typing import Optional
+from typing import Optional, Any
 from dataclasses import replace
 import inspect
 
@@ -16,31 +17,39 @@ class MultiOutputRegressor(Regressor):
       or `condition` is called with target data `Y`.
     - Parallel Execution: All operations (inference, training) are vectorized 
       using `jax.vmap` over the stacked models.
+    - Memory Efficiency: The 'estimator' template is discarded (set to None)
+      once the batched model is initialized.
     """
     batched: Optional[eqx.Module] = None
-    estimator: eqx.Module
+    estimator: Optional[eqx.Module] = None
     _output_dim: Optional[int] = eqx.field(static=True, default=None)
 
     def __init__(
         self, 
-        estimator: eqx.Module,
+        estimator: Optional[eqx.Module] = None,
         output_dim: Optional[int] = None,
         # Internal fields for state reconstruction
         batched: Optional[eqx.Module] = None,
         _output_dim: Optional[int] = None
     ):
-        self.estimator = estimator
-        
-        # 1. Reconstruction Path (loading from disk)
+        # 1. Reconstruction Path (loading from disk or replace)
         if batched is not None:
             self.batched = batched
             self._output_dim = _output_dim
+            # If we have the batch, we don't need the template
+            self.estimator = None 
             return
 
-        # 2. Eager Init Path (if user knows dim upfront)
+        # 2. Standard Init
+        self.estimator = estimator
+
+        # 3. Eager Init Path (if user knows dim upfront)
         if output_dim is not None:
+            if estimator is None:
+                raise ValueError("Must provide 'estimator' when initializing with 'output_dim'.")
             self._output_dim = output_dim
             self.batched = self._create_batch(output_dim)
+            self.estimator = None # Discard template immediately
         else:
             self._output_dim = None
             self.batched = None
@@ -50,11 +59,14 @@ class MultiOutputRegressor(Regressor):
     @property
     def strategy(self) -> str:
         """
-        Delegates strategy to the inner estimator.
-        - If inner is 'analytical' (LinReg), we solve analytically M times.
-        - If inner is 'loss-internal' (GP), we sum the M internal losses.
+        Delegates strategy to the inner model.
+        Checks 'batched' first (post-init), then 'estimator' (pre-init).
         """
-        return self.estimator.strategy
+        target = self.batched if self.batched is not None else self.estimator
+        if target is None:
+             # Fallback if accessed on a broken/empty instance
+             raise RuntimeError("Cannot access strategy: Model not initialized and no estimator provided.")
+        return target.strategy
 
     # --- 2. Structural Updates (State Management) ---
 
@@ -71,6 +83,7 @@ class MultiOutputRegressor(Regressor):
         def single_condition(m, x, y):
             if hasattr(m, 'condition'):
                 return m.condition(x, y)
+            return m
 
         new_batched = jax.vmap(single_condition)(model.batched, X_stack, Y_stack)
         return replace(model, batched=new_batched)    
@@ -81,6 +94,7 @@ class MultiOutputRegressor(Regressor):
         2. Vmaps the solve() call across all M models.
         """
         # Ensure we have a stack of M models ready
+        # This returns a model where .estimator is None and .batched is set
         model = self._ensure_init(Y)
         M = model._output_dim
         
@@ -88,14 +102,14 @@ class MultiOutputRegressor(Regressor):
         X_stack = jnp.broadcast_to(X, (M,) + X.shape)
         Y_stack = Y.T 
         
-        # Only call solve if the inner estimator supports it
-        if hasattr(self.estimator, 'solve'):
+        # Check for 'solve' on the batched instance (since estimator might be None now)
+        if hasattr(model.batched, 'solve'):
             new_batched = jax.vmap(lambda m, x, y: m.solve(x, y))(
                 model.batched, X_stack, Y_stack
             )
             return replace(model, batched=new_batched)
         
-        # If inner model has no solve (e.g. MLP), we just return the initialized model
+        # If inner model has no solve (e.g. MLP), just return the initialized model
         return model
 
     # --- 3. Loss Calculation (For 'loss-internal') ---
@@ -109,14 +123,12 @@ class MultiOutputRegressor(Regressor):
             raise RuntimeError("MultiOutputRegressor cannot compute loss: Model is uninitialized. Call solve() first.")
         
         # Helper to handle key splitting
-        def single_loss(model, k):
-            if 'key' in inspect.signature(model.loss).parameters: 
-                return model.loss(key=k)
-            return model.loss()
+        def single_loss(model, key):
+            return model.loss(key=key)
         
         keys = None
         if key is not None: 
-            keys = jax.random.split(key, self._output_dim)
+            keys = jr.split(key, self._output_dim)
             
         if keys is not None: 
             all_losses = jax.vmap(single_loss)(self.batched, keys)
@@ -127,14 +139,21 @@ class MultiOutputRegressor(Regressor):
 
     # --- 4. Forward Pass ---
 
-    def __call__(self, x: jnp.ndarray, **kwargs) -> jnp.ndarray:
+    def __call__(self, x: jnp.ndarray, key=None, **kwargs) -> jnp.ndarray:
         """
         Single-sample forward pass. Returns (M,) vector.
         """
         if self.batched is None: 
             raise RuntimeError("MultiOutputRegressor is uninitialized. Call solve() or fit() first.")
         
-        return jax.vmap(lambda m: m(x, **kwargs))(self.batched)
+        def single_call(model, x, key):
+            return model(x, key=key, **kwargs)
+        
+        keys = None
+        if key is not None:
+            keys = jr.split(key, self._output_dim)
+        
+        return jax.vmap(single_call)(self.batched, keys)
 
     # --- 5. Helpers ---
 
@@ -143,29 +162,45 @@ class MultiOutputRegressor(Regressor):
         Creates a stack of M identical estimators.
         Leaf stacking allows jax.vmap to treat dimension 0 as the batch dim.
         """
+        if self.estimator is None:
+            raise RuntimeError("Cannot create batch: 'estimator' is None.")
+            
         list_of_models = [self.estimator for _ in range(M)]
         return jax.tree.map(lambda *args: jnp.stack(args), *list_of_models)
 
     def _ensure_init(self, Y: jnp.ndarray) -> "MultiOutputRegressor":
-        """Lazily initializes the batch if needed based on Y."""
+        """
+        Lazily initializes the batch if needed based on Y.
+        Sets estimator to None in the returned instance.
+        """
         M = Y.shape[1]
         
+        # Case A: Already initialized
         if self.batched is not None:
             if self._output_dim != M: 
                 raise ValueError(f"Y dimension {M} does not match initialized dim {self._output_dim}")
             return self
         
+        # Case B: First time init
         new_batched = self._create_batch(M)
-        return replace(self, batched=new_batched, _output_dim=M)
+        
+        # Return new state: batched set, estimator cleared
+        return replace(self, batched=new_batched, _output_dim=M, estimator=None)
 
     def __getattr__(self, name):
         """
-        Delegates attributes to the batched object (e.g. accessing .X returns stacked X).
+        Delegates attributes to the inner model.
+        Prioritizes 'batched', falls back to 'estimator' (if pre-init).
         """
         if name.startswith("__"):
             raise AttributeError(name)
-        if self.batched is None:
-            # If not initialized, we can try peeking at the base estimator
-            # This helps inspect.signature checks before fitting
+            
+        # 1. Try batched (initialized state)
+        if self.batched is not None:
+            return getattr(self.batched, name)
+            
+        # 2. Try estimator (pre-init state)
+        if self.estimator is not None:
             return getattr(self.estimator, name)
-        return getattr(self.batched, name)
+            
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}' (and no internal model is set)")

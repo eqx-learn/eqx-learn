@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "eqx-learn"
-version = "0.2.1"
+version = "0.2.2"
 description = "Classical machine learning using JAX and Equinox"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -28,6 +28,7 @@ dependencies = [
     "jax>=0.4.0",
     "equinox",
     "optax",
+    "jaxopt",
     "tqdm",
     "paramax",
 ]

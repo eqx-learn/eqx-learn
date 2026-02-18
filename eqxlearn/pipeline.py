@@ -1,4 +1,5 @@
 import jax
+import jax.random as jr
 import jax.numpy as jnp
 from typing import List, Tuple, Union, Optional
 from dataclasses import replace
@@ -108,47 +109,64 @@ class Pipeline(Estimator, Transformer):
 
     # --- 4. Standard Inference Methods ---
 
-    def __call__(self, x: jnp.ndarray, **kwargs) -> jnp.ndarray:
+    def __call__(self, x: jnp.ndarray, key=None, **kwargs) -> jnp.ndarray:
         """
         Single sample inference. Passes x through all steps.
         """
-        for name, layer in self.steps:
+        if key is not None:
+            keys = jr.split(key, len(self.steps))
+        else: 
+            keys = [None] * len(self.steps)
+        for (name, layer), key in zip(self.steps, keys):
             # Simple pass-through.
             # If you need specific kwargs filtering per layer, add it here.
-            x = layer(x, **kwargs)
+            x = layer(x, key=key, **kwargs)
         return x
 
-    def inverse(self, x: jnp.ndarray, **kwargs) -> jnp.ndarray:
+    def inverse(self, x: jnp.ndarray, key=None, **kwargs) -> jnp.ndarray:
         """
         Inverts the pipeline in reverse order.
         """
-        for name, layer in reversed(self.steps):
+        if key is not None:
+            keys = jr.split(key, len(self.steps))
+        else: 
+            keys = [None] * len(self.steps)        
+        for (name, layer), key in zip(reversed(self.steps), keys):
             if hasattr(layer, "inverse"):
-                x = layer.inverse(x, **kwargs)
+                x = layer.inverse(x, key=key, **kwargs)
             else:
                  raise NotImplementedError(f"Step '{name}' does not implement .inverse()")
         return x
     
-    def predict(self, X: jnp.ndarray, **kwargs) -> jnp.ndarray:
+    def predict(self, X: jnp.ndarray, key=None, **kwargs) -> jnp.ndarray:
         """
         Predicts targets for a batch of samples `X`.
         """
         if not isinstance(self.steps[-1][1], Estimator):
             raise Exception("Cannot call 'predict' on Pipeline since final step is not an estimator")
-        return super().predict(X, **kwargs)
+        return super().predict(X, key=key, **kwargs)
 
-    def transform(self, X: jnp.ndarray, **kwargs) -> jnp.ndarray:
+    def transform(self, X: jnp.ndarray, key=None, **kwargs) -> jnp.ndarray:
         """
         Transforms targets for a batch of samples `X`.
         """
         if isinstance(self.steps[-1][1], Transformer):
-            return super().transform(X, **kwargs)
+            return super().transform(X, key=key, **kwargs)
         
-        def transform_one(x):
-            for name, layer in self.steps[0:-1]:
-                x = layer(x, **kwargs)
+        def transform_one(x, key=None):
+            if key is not None:
+                step_keys = jr.split(key, len(self.steps))
+            else: 
+                step_keys = [None] * len(self.steps)     
+            for (name, layer), s_key in zip(self.steps[0:-1], step_keys):
+                x = layer(x, key=s_key, **kwargs)
             return x
-        return jax.vmap(transform_one)(X)
+        
+        if key is not None:
+            batch_keys = jr.split(key, X.shape[0])
+        else:
+            batch_keys = None
+        return jax.vmap(transform_one)(X, batch_keys)
 
     # --- Indexing Support ---
     def __getitem__(self, key: Union[str, int, slice]):

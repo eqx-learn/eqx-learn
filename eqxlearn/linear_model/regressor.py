@@ -60,7 +60,7 @@ class LinearRegressor(Regressor):
         # 5. Return new model (Immutable update)
         return replace(self, weight=new_weight, bias=new_bias)
     
-    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+    def __call__(self, x: jnp.ndarray, key=None) -> jnp.ndarray:
         """
         Forward pass for a SINGLE sample x.
         x: (D,) array
