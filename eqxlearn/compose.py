@@ -95,6 +95,8 @@ class TransformedTargetRegressor(Regressor):
         # Note: If regressor returns (mean, var), it's a tuple.
         if key is not None:
             regressor_key, inverse_key = jr.split(key)
+        else:
+            regressor_key, inverse_key = None, None
 
         raw_pred = self.regressor(x, key=regressor_key, **kwargs)
         
