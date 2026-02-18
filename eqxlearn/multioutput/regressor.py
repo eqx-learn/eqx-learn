@@ -146,7 +146,7 @@ class MultiOutputRegressor(Regressor):
         if self.batched is None: 
             raise RuntimeError("MultiOutputRegressor is uninitialized. Call solve() or fit() first.")
         
-        def single_call(model, x, key):
+        def single_call(model, key):
             return model(x, key=key, **kwargs)
         
         keys = None
