@@ -51,7 +51,7 @@ def fit(
     if strategy == 'analytical':
         return model, []
         
-    # Create the base filter spec, which freezes any analytical models
+    # Create the base filter spec, which freezes any analytical models 
     def is_analytical_model(node):
         return isinstance(node, BaseModel) and node.strategy == 'analytical'
     def build_filter_spec(node):

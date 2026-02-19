@@ -2,6 +2,8 @@ import jax
 import jax.numpy as jnp
 from typing import Tuple
 
+from sklearn.model_selection import train_test_split
+
 def train_test_split(
     *arrays: jnp.ndarray,
     test_size: float = 0.25,
