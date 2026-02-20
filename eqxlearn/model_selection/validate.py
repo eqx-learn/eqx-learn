@@ -1,5 +1,4 @@
 import time
-import jax
 import jax.numpy as jnp
 from jax import tree_util
 
