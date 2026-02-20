@@ -59,12 +59,16 @@ class ConstantKernel(Kernel):
     def __init__(self, variance=1.0):
         # Ensure we work with arrays, even if scalar passed
         self.log_variance = jnp.log(jnp.array(variance))
-
-    def __call__(self, x1, x2, key=None):
+        
+    @property
+    def variance(self) -> jnp.ndarray:
         return jnp.exp(self.log_variance)
 
+    def __call__(self, x1, x2, key=None):
+        return self.variance
+
     def __repr__(self):
-        val = jnp.exp(self.log_variance)
+        val = self.variance
         return f"{_fmt(val)}**2"
 
 class RBFKernel(Kernel):
@@ -76,15 +80,17 @@ class RBFKernel(Kernel):
             length_scale: Scalar (Isotropic) or Vector (ARD) of shape (D,)
         """
         self.log_length_scale = jnp.log(jnp.array(length_scale))
+        
+    @property
+    def length_scale(self) -> jnp.ndarray:
+        return jnp.exp(self.log_length_scale)
 
     def __call__(self, x1, x2, key=None):
-        length_scale = jnp.exp(self.log_length_scale)
-        
         # --- ARD UPDATE START ---
         # 1. Scale the difference per dimension
         # If length_scale is scalar, this broadcasts (Isotropic).
         # If length_scale is vector (D,), this divides element-wise (ARD).
-        scaled_diff = (x1 - x2) / length_scale
+        scaled_diff = (x1 - x2) / self.length_scale
         
         # 2. Square and Sum
         sq_dist = jnp.sum(scaled_diff**2)
@@ -93,7 +99,7 @@ class RBFKernel(Kernel):
         return jnp.exp(-0.5 * sq_dist)
     
     def __repr__(self):
-        ls = jnp.exp(self.log_length_scale)
+        ls = jnp.exp(self.length_scale)
         return f"RBF(length_scale={_fmt(ls)})"
 
 class WhiteNoiseKernel(Kernel):
@@ -101,12 +107,16 @@ class WhiteNoiseKernel(Kernel):
 
     def __init__(self, noise_level=1.0):
         self.log_variance = jnp.log(jnp.array(noise_level))
+        
+    @property
+    def variance(self) -> jnp.ndarray:
+        return jnp.exp(self.log_variance)        
 
     def __call__(self, x1, x2, key=None):
         is_equal = jnp.allclose(x1, x2)
         # Use where to maintain differentiability flow
-        return jnp.where(is_equal, jnp.exp(self.log_variance), 0.0)
+        return jnp.where(is_equal, self.variance, 0.0)
 
     def __repr__(self):
-        val = jnp.exp(self.log_variance)
+        val = self.variance
         return f"WhiteKernel(noise_level={_fmt(val)})"

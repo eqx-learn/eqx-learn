@@ -16,7 +16,7 @@ def _block_until_ready(pytree):
         pytree
     )
 
-def cross_validate(model: BaseModel, X: jnp.ndarray, y: jnp.ndarray, cv, scoring, return_train_score=False, return_estimator=False, **fit_kwargs):
+def cross_validate(model: BaseModel, X: jnp.ndarray, y: jnp.ndarray, cv, scoring, return_train_score=False, return_estimator=False, return_loss=False, key=None, **fit_kwargs):
     """
     Evaluate metric(s) by cross-validation and record fit/score times.
     
@@ -40,6 +40,8 @@ def cross_validate(model: BaseModel, X: jnp.ndarray, y: jnp.ndarray, cv, scoring
         results["train_score"] = []
     if return_estimator:
         results["estimator"] = []
+    if return_loss:
+        results["loss"] = []
 
     for train_idx, test_idx in cv.split(X):
         X_train, y_train = X[train_idx], y[train_idx]
@@ -47,13 +49,15 @@ def cross_validate(model: BaseModel, X: jnp.ndarray, y: jnp.ndarray, cv, scoring
 
         # --- Fit ---
         start_fit = time.time()
-        fitted_model, _losses = fit(model, X_train, y_train, **fit_kwargs) 
+        fitted_model, losses = fit(model, X_train, y_train, key=key, **fit_kwargs) 
         _block_until_ready(fitted_model)
         results["fit_time"].append(time.time() - start_fit)
 
-        # --- Store Estimator ---
+        # --- Store Estimator/Loss ---
         if return_estimator:
-            results["estimator"].append(fitted_model) # <-- Save the PyTree
+            results["estimator"].append(fitted_model)
+        if return_loss:
+            results["loss"].append(losses[-1])
 
         # --- Score Test ---
         start_score = time.time()
