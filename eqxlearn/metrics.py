@@ -2,16 +2,16 @@ import jax.numpy as jnp
 import equinox as eqx
 
 @eqx.filter_jit
-def mean_squared_error(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> jnp.ndarray:
-    return jnp.mean((jnp.abs(y_true - y_pred)) ** 2)
+def mean_squared_error(y_true: jnp.ndarray, y_pred: jnp.ndarray, axis=None) -> jnp.ndarray:
+    return jnp.mean((jnp.abs(y_true - y_pred)) ** 2, axis=axis)
 
 @eqx.filter_jit
-def root_mean_squared_error(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> jnp.ndarray:
-    return jnp.sqrt(jnp.mean((jnp.abs(y_true - y_pred)) ** 2))
+def root_mean_squared_error(y_true: jnp.ndarray, y_pred: jnp.ndarray, axis=None) -> jnp.ndarray:
+    return jnp.sqrt(jnp.mean((jnp.abs(y_true - y_pred)) ** 2), axis=axis)
 
 @eqx.filter_jit
-def mean_absolute_error(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> jnp.ndarray:
-    return jnp.mean((jnp.abs(y_true - y_pred)))
+def mean_absolute_error(y_true: jnp.ndarray, y_pred: jnp.ndarray, axis=None) -> jnp.ndarray:
+    return jnp.mean((jnp.abs(y_true - y_pred)), axis=axis)
 
 @eqx.filter_jit
 def r2_score(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> jnp.ndarray:

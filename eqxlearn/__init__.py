@@ -5,6 +5,6 @@ import jax
 jax.config.update("jax_enable_x64", True)
 
 from eqxlearn.base import BaseModel
-from eqxlearn.fitting import fit
+from eqxlearn.fitting import fit, fit_transform
 
 __version__ = "0.1.0"

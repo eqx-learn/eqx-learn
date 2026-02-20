@@ -48,3 +48,51 @@ def train_test_split(
         results.append(arr[test_idx])
         
     return tuple(results)
+
+class KFold:
+    def __init__(self, n_splits=5, *, shuffle=True, key=None):
+        if n_splits < 2:
+            raise ValueError("n_splits must be at least 2")
+
+        self.n_splits = n_splits
+        self.shuffle = shuffle
+        self.key = key
+
+        if shuffle and key is None:
+            raise ValueError("Must provide PRNG key when shuffle=True")
+
+    def split(self, X: jnp.ndarray):
+        """
+        Returns generator of (train_indices, test_indices)
+        """
+        n_samples = X.shape[0]
+        indices = jnp.arange(n_samples)
+
+        if self.shuffle:
+            indices = jax.random.permutation(self.key, indices)
+
+        # compute fold sizes
+        fold_sizes = jnp.full(
+            (self.n_splits,),
+            n_samples // self.n_splits,
+            dtype=jnp.int32,
+        )
+
+        remainder = n_samples % self.n_splits
+        fold_sizes = fold_sizes.at[:remainder].add(1) # add 1 sample to the first `remainder` folds
+
+        # compute fold boundaries
+        boundaries = jnp.concatenate([jnp.array([0]), jnp.cumsum(fold_sizes)])
+
+        for i in range(self.n_splits):
+            start = boundaries[i]
+            stop = boundaries[i + 1]
+
+            test_idx = indices[start:stop]
+
+            train_idx = jnp.concatenate([
+                indices[:start],
+                indices[stop:]
+            ])
+
+            yield train_idx, test_idx

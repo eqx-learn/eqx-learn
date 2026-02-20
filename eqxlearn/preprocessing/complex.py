@@ -7,6 +7,9 @@ class ComplexSplitter(InvertibleTransformer):
     Splits Complex (N,) <-> Real (2N,).
     Inverse packs distinct variances into a complex container.
     """
+    def solve(self, X, y) -> Any:
+        return self
+    
     def __call__(self, x: Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]], key=None, **kwargs) -> Any:
         # Forward: Unpack complex variance into stacked real array
         # Input variance is complex: Re=Var(Re), Im=Var(Im)
