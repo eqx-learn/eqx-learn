@@ -12,7 +12,7 @@ from tqdm.auto import tqdm
 from eqxlearn.metrics import mean_squared_error
 from eqxlearn.base import BaseModel, Transformer
 
-logger = logging.getLogger(__file__)
+logger = logging.getLogger(__name__)
 
 def fit(
     model: BaseModel,

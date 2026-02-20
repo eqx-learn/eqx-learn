@@ -65,6 +65,8 @@ class KFold:
         """
         Returns generator of (train_indices, test_indices)
         """
+        n_splits = min(len(X), self.n_splits)
+        
         n_samples = X.shape[0]
         indices = jnp.arange(n_samples)
 
@@ -73,18 +75,18 @@ class KFold:
 
         # compute fold sizes
         fold_sizes = jnp.full(
-            (self.n_splits,),
-            n_samples // self.n_splits,
+            (n_splits,),
+            n_samples // n_splits,
             dtype=jnp.int32,
         )
 
-        remainder = n_samples % self.n_splits
+        remainder = n_samples % n_splits
         fold_sizes = fold_sizes.at[:remainder].add(1) # add 1 sample to the first `remainder` folds
 
         # compute fold boundaries
         boundaries = jnp.concatenate([jnp.array([0]), jnp.cumsum(fold_sizes)])
 
-        for i in range(self.n_splits):
+        for i in range(n_splits):
             start = boundaries[i]
             stop = boundaries[i + 1]
 
